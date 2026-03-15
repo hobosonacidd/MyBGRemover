@@ -102,10 +102,12 @@ class PreviewCanvas(QFrame):
         self.image_label.setAlignment(Qt.AlignCenter)
         self.image_label.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Ignored)
         self.image_label.setMinimumSize(200, 200)
+        self.image_label.setStyleSheet("background: #1f1f1f;")
 
         self.scroll_area = QScrollArea()
         self.scroll_area.setWidget(self.image_label)
         self.scroll_area.setWidgetResizable(False)
+        self.scroll_area.viewport().setStyleSheet("background: #1f1f1f;")
 
         layout.addWidget(self.title_label)
         layout.addLayout(toolbar)
@@ -117,6 +119,8 @@ class PreviewCanvas(QFrame):
         self.after_btn.clicked.connect(self.show_after)
         self.undo_btn.clicked.connect(self.undo)
         self.redo_btn.clicked.connect(self.redo)
+        self.zoom_in_btn.clicked.connect(self.zoom_in)
+        self.zoom_out_btn.clicked.connect(self.zoom_out)
 
     def set_magic_mode(self, mode: str):
         self._magic_mode = mode
@@ -136,7 +140,14 @@ class PreviewCanvas(QFrame):
         self._brush_size = brush_size
         self._tolerance = tolerance
 
-    def set_preview_images(self, before_image_path, after_image_path=None, **_):
+    def set_preview_images(self, before_image_path, after_image_path=None, **kwargs):
+
+        default_mode = kwargs.get("default_mode", "before")
+        title_text = kwargs.get("title_text")
+
+        self._before_image_pil = None
+        self._editable_after_image_pil = None
+        self._editable_rgba = None
 
         if before_image_path and Path(before_image_path).exists():
             with Image.open(before_image_path) as img:
@@ -149,14 +160,28 @@ class PreviewCanvas(QFrame):
         if self._editable_after_image_pil is not None:
             self._editable_rgba = np.array(self._editable_after_image_pil)
 
+        self._zoom_factor = 1.0
+
+        if default_mode == "after" and self._editable_after_image_pil is not None:
+            self._current_mode = "after"
+        else:
+            self._current_mode = "before"
+
+        self.title_label.setText(title_text or "Preview")
         self._load_current_mode_pixmap()
 
     def set_preview_mode(self):
         self._interaction_mode = "preview"
+        self.preview_mode_btn.setText("Preview Mode ✓")
+        self.edit_mode_btn.setText("Edit Mode")
+        self._load_current_mode_pixmap()
 
     def set_edit_mode(self):
         self._interaction_mode = "edit"
         self._current_mode = "after"
+        self.preview_mode_btn.setText("Preview Mode")
+        self.edit_mode_btn.setText("Edit Mode ✓")
+        self._load_current_mode_pixmap()
 
     def show_before(self):
         self._current_mode = "before"
@@ -185,7 +210,45 @@ class PreviewCanvas(QFrame):
         pixmap.loadFromData(buffer.getvalue())
 
         self._current_pixmap = pixmap
-        self.image_label.setPixmap(pixmap)
+        self._apply_zoom()
+
+    def _apply_zoom(self):
+        if self._current_pixmap is None:
+            return
+
+        base_w = self._current_pixmap.width()
+        base_h = self._current_pixmap.height()
+        if base_w == 0 or base_h == 0:
+            return
+
+        viewport_size = self.scroll_area.viewport().size()
+        fit_scale = min(viewport_size.width() / base_w, viewport_size.height() / base_h, 1.0)
+        fit_scale = max(fit_scale, 0.05)
+
+        scale = max(min(fit_scale * self._zoom_factor, 8.0), 0.05)
+        target_w = max(1, int(base_w * scale))
+        target_h = max(1, int(base_h * scale))
+
+        scaled_pixmap = self._current_pixmap.scaled(
+            target_w,
+            target_h,
+            Qt.KeepAspectRatio,
+            Qt.SmoothTransformation,
+        )
+        self.image_label.setPixmap(scaled_pixmap)
+        self.image_label.resize(scaled_pixmap.size())
+
+    def zoom_in(self):
+        self._zoom_factor = min(self._zoom_factor * 1.25, 8.0)
+        self._apply_zoom()
+
+    def zoom_out(self):
+        self._zoom_factor = max(self._zoom_factor / 1.25, 0.1)
+        self._apply_zoom()
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        self._apply_zoom()
 
     def handle_mouse_press(self, event):
 
