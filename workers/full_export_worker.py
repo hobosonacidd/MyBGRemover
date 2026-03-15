@@ -1,0 +1,147 @@
+from pathlib import Path
+
+from PySide6.QtCore import QObject, Signal, Slot
+
+from processing.rembg_engine import RembgEngine
+from processing.export_utils import build_output_path, export_processed_image
+from processing.mask_ops import apply_preview_edit_delta_to_fullres
+
+
+class FullExportWorker(QObject):
+    finished = Signal(int, str, str)
+    error = Signal(int, str)
+    status = Signal(str)
+
+    def __init__(
+        self,
+        item_index: int,
+        source_path: Path,
+        processed_cache_path: Path,
+        output_dir: Path,
+        output_format: str,
+        suffix: str,
+        model_name: str,
+        background_mode: str,
+        background_color_name: str,
+        base_preview_mask_path: Path | None = None,
+        edited_preview_mask_path: Path | None = None,
+        apply_preview_edits: bool = False,
+    ):
+        super().__init__()
+
+        self.item_index = item_index
+        self.source_path = Path(source_path)
+        self.processed_cache_path = Path(processed_cache_path)
+        self.output_dir = Path(output_dir)
+
+        self.output_format = output_format
+        self.suffix = suffix
+        self.model_name = model_name
+
+        self.background_mode = background_mode
+        self.background_color_name = background_color_name
+
+        self.base_preview_mask_path = Path(base_preview_mask_path) if base_preview_mask_path else None
+        self.edited_preview_mask_path = Path(edited_preview_mask_path) if edited_preview_mask_path else None
+        self.apply_preview_edits = apply_preview_edits
+
+    @Slot()
+    def run(self):
+        try:
+            self.status.emit(f"Full export worker started for item index {self.item_index}")
+            self.status.emit(f"Generating full-resolution cutout from: {self.source_path}")
+            self.status.emit(f"Model: {self.model_name}")
+            self.status.emit(f"Output format: {self.output_format}")
+            self.status.emit(f"Background mode: {self.background_mode}")
+            self.status.emit(f"Background color: {self.background_color_name}")
+            self.status.emit(f"Full-res cache path: {self.processed_cache_path}")
+
+            engine = RembgEngine()
+
+            ok, error_message = engine.remove_background_fullres(
+                input_path=self.source_path,
+                output_path=self.processed_cache_path,
+                model_name=self.model_name,
+            )
+
+            if not ok:
+                self.error.emit(
+                    self.item_index,
+                    error_message or "Full-resolution background removal failed."
+                )
+                return
+
+            if not self.processed_cache_path.exists():
+                self.error.emit(
+                    self.item_index,
+                    "Full-resolution processed image was not created."
+                )
+                return
+
+            self.status.emit(f"Full-res processed image created: {self.processed_cache_path}")
+
+            if (
+                self.apply_preview_edits
+                and self.base_preview_mask_path is not None
+                and self.edited_preview_mask_path is not None
+            ):
+                self.status.emit(
+                    f"Applying preview edit delta to full-res export: {self.edited_preview_mask_path}"
+                )
+
+                ok, error_message = apply_preview_edit_delta_to_fullres(
+                    fullres_image_path=self.processed_cache_path,
+                    base_preview_mask_image_path=self.base_preview_mask_path,
+                    edited_preview_mask_image_path=self.edited_preview_mask_path,
+                )
+
+                if not ok:
+                    self.error.emit(
+                        self.item_index,
+                        error_message or "Applying preview edits to full-resolution export failed."
+                    )
+                    return
+
+                self.status.emit("Preview edit delta applied to full-resolution export.")
+
+            output_path = build_output_path(
+                source_path=self.source_path,
+                output_dir=self.output_dir,
+                suffix=self.suffix,
+                output_format=self.output_format,
+            )
+
+            self.status.emit(f"Preparing final export: {output_path}")
+
+            ok, error_message = export_processed_image(
+                processed_image_path=self.processed_cache_path,
+                output_path=output_path,
+                output_format=self.output_format,
+                background_mode=self.background_mode,
+                background_color_name=self.background_color_name,
+            )
+
+            if not ok:
+                self.error.emit(
+                    self.item_index,
+                    error_message or "Final export failed."
+                )
+                return
+
+            if not Path(output_path).exists():
+                self.error.emit(
+                    self.item_index,
+                    "Export finished but output file was not created."
+                )
+                return
+
+            self.status.emit(f"Full export complete: {output_path}")
+
+            self.finished.emit(
+                self.item_index,
+                str(self.processed_cache_path),
+                str(output_path),
+            )
+
+        except Exception as e:
+            self.error.emit(self.item_index, str(e))
