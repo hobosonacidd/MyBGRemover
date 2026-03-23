@@ -27,19 +27,45 @@ def build_output_path(
     output_dir: Path,
     suffix: str,
     output_format: str,
+    overwrite_existing: bool = False,
 ) -> Path:
     extension = FORMAT_MAP.get(output_format.upper(), ".png")
     safe_stem = sanitize_output_stem(source_path.stem)
     base_name = f"{safe_stem}{suffix}"
 
     candidate = output_dir / f"{base_name}{extension}"
-    counter = 1
 
+    if overwrite_existing:
+        return candidate
+
+    counter = 1
     while candidate.exists():
         candidate = output_dir / f"{base_name}_{counter}{extension}"
         counter += 1
 
     return candidate
+
+
+def prepare_base_export_image(
+    source_path: Path,
+    destination_path: Path,
+) -> tuple[bool, str | None]:
+    try:
+        source_path = Path(source_path)
+        destination_path = Path(destination_path)
+        destination_path.parent.mkdir(parents=True, exist_ok=True)
+
+        with Image.open(source_path) as img:
+            img = img.convert("RGBA")
+            img.save(destination_path, format="PNG")
+
+        if not destination_path.exists():
+            return False, f"Base export image was not created: {destination_path}"
+
+        return True, None
+
+    except Exception as e:
+        return False, str(e)
 
 
 def export_processed_image(

@@ -3,7 +3,11 @@ from pathlib import Path
 from PySide6.QtCore import QObject, Signal, Slot
 
 from processing.rembg_engine import RembgEngine
-from processing.export_utils import build_output_path, export_processed_image
+from processing.export_utils import (
+    build_output_path,
+    export_processed_image,
+    prepare_base_export_image,
+)
 from processing.mask_ops import apply_preview_edit_delta_to_fullres
 
 
@@ -26,6 +30,8 @@ class FullExportWorker(QObject):
         base_preview_mask_path: Path | None = None,
         edited_preview_mask_path: Path | None = None,
         apply_preview_edits: bool = False,
+        skip_background_removal: bool = False,
+        overwrite_existing: bool = False,
     ):
         super().__init__()
 
@@ -44,32 +50,52 @@ class FullExportWorker(QObject):
         self.base_preview_mask_path = Path(base_preview_mask_path) if base_preview_mask_path else None
         self.edited_preview_mask_path = Path(edited_preview_mask_path) if edited_preview_mask_path else None
         self.apply_preview_edits = apply_preview_edits
+        self.skip_background_removal = skip_background_removal
+        self.overwrite_existing = overwrite_existing
 
     @Slot()
     def run(self):
         try:
             self.status.emit(f"Full export worker started for item index {self.item_index}")
-            self.status.emit(f"Generating full-resolution cutout from: {self.source_path}")
+            self.status.emit(f"Source image: {self.source_path}")
             self.status.emit(f"Model: {self.model_name}")
             self.status.emit(f"Output format: {self.output_format}")
             self.status.emit(f"Background mode: {self.background_mode}")
             self.status.emit(f"Background color: {self.background_color_name}")
             self.status.emit(f"Full-res cache path: {self.processed_cache_path}")
 
-            engine = RembgEngine()
+            if self.skip_background_removal:
+                self.status.emit("Skipping AI background removal for export.")
+                self.status.emit("Preparing full-resolution base image from original source.")
 
-            ok, error_message = engine.remove_background_fullres(
-                input_path=self.source_path,
-                output_path=self.processed_cache_path,
-                model_name=self.model_name,
-            )
-
-            if not ok:
-                self.error.emit(
-                    self.item_index,
-                    error_message or "Full-resolution background removal failed."
+                ok, error_message = prepare_base_export_image(
+                    source_path=self.source_path,
+                    destination_path=self.processed_cache_path,
                 )
-                return
+
+                if not ok:
+                    self.error.emit(
+                        self.item_index,
+                        error_message or "Preparing base full-resolution export image failed.",
+                    )
+                    return
+            else:
+                self.status.emit(f"Generating full-resolution cutout from: {self.source_path}")
+
+                engine = RembgEngine()
+
+                ok, error_message = engine.remove_background_fullres(
+                    input_path=self.source_path,
+                    output_path=self.processed_cache_path,
+                    model_name=self.model_name,
+                )
+
+                if not ok:
+                    self.error.emit(
+                        self.item_index,
+                        error_message or "Full-resolution background removal failed."
+                    )
+                    return
 
             if not self.processed_cache_path.exists():
                 self.error.emit(
@@ -78,7 +104,7 @@ class FullExportWorker(QObject):
                 )
                 return
 
-            self.status.emit(f"Full-res processed image created: {self.processed_cache_path}")
+            self.status.emit(f"Full-res working image ready: {self.processed_cache_path}")
 
             if (
                 self.apply_preview_edits
@@ -109,6 +135,7 @@ class FullExportWorker(QObject):
                 output_dir=self.output_dir,
                 suffix=self.suffix,
                 output_format=self.output_format,
+                overwrite_existing=self.overwrite_existing,
             )
 
             self.status.emit(f"Preparing final export: {output_path}")

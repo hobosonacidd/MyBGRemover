@@ -40,11 +40,11 @@ def apply_preview_edit_delta_to_fullres(
 
             base_resized = Image.fromarray(base_preview_alpha, mode="L").resize(
                 full_img.size,
-                Image.Resampling.LANCZOS,
+                Image.Resampling.BILINEAR,
             )
             edited_resized = Image.fromarray(edited_preview_alpha, mode="L").resize(
                 full_img.size,
-                Image.Resampling.LANCZOS,
+                Image.Resampling.BILINEAR,
             )
 
             base_alpha = np.array(base_resized, dtype=np.float32) / 255.0
@@ -58,6 +58,7 @@ def apply_preview_edit_delta_to_fullres(
 
             if np.any(erase_mask):
                 erase_ratio = edited_alpha[erase_mask] / np.maximum(base_alpha[erase_mask], eps)
+                erase_ratio = np.clip(erase_ratio, 0.0, 1.0)
                 result_alpha[erase_mask] = full_alpha[erase_mask] * erase_ratio
 
             if np.any(restore_mask):

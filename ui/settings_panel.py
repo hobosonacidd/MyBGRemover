@@ -10,16 +10,127 @@ from PySide6.QtWidgets import (
     QSlider,
     QHBoxLayout,
 )
-from PySide6.QtCore import Qt
+from PySide6.QtCore import Qt, Signal
 
 
 class SettingsPanel(QFrame):
+    tool_mode_about_to_change = Signal(str, str)
+    tool_preset_apply_requested = Signal(str, str, str)
+
     def __init__(self):
         super().__init__()
 
         self.setObjectName("settingsPanel")
         self.setFrameShape(QFrame.StyledPanel)
         self.setMinimumWidth(320)
+
+        self.model_descriptions = {
+            "u2net": "General-purpose model with good overall quality.",
+            "u2netp": "Smaller and faster general-purpose model.",
+            "u2net_human_seg": "Best suited for people / portraits.",
+            "isnet-general-use": "General-use model, often higher quality but can be heavier/slower.",
+            "isnet-anime": "Best suited for anime / illustrated characters.",
+            "birefnet-general-lite": "Lighter BiRefNet model for general images.",
+            "birefnet-general": "General BiRefNet model, potentially better quality but heavier.",
+            "birefnet-portrait": "BiRefNet model intended for portraits / people.",
+            "bria-rmbg": "BRIA background removal model. May vary in speed/stability depending on setup.",
+        }
+
+        self.tool_defaults = {
+            "Erase": {
+                "Brush": {
+                    "apply_mode": "Brush",
+                    "brush_size": 42,
+                    "softness": 35,
+                    "opacity": 100,
+                    "spacing": 1,
+                    "tolerance": 35,
+                    "magic_mode": "Connected Region",
+                    "edge_protect": True,
+                },
+                "Smart Selection": {
+                    "apply_mode": "Smart Selection",
+                    "brush_size": 42,
+                    "softness": 35,
+                    "opacity": 100,
+                    "spacing": 1,
+                    "tolerance": 35,
+                    "magic_mode": "Connected Region",
+                    "edge_protect": True,
+                },
+            },
+            "Restore": {
+                "Brush": {
+                    "apply_mode": "Brush",
+                    "brush_size": 42,
+                    "softness": 45,
+                    "opacity": 100,
+                    "spacing": 1,
+                    "tolerance": 35,
+                    "magic_mode": "Connected Region",
+                    "edge_protect": True,
+                },
+                "Smart Selection": {
+                    "apply_mode": "Smart Selection",
+                    "brush_size": 42,
+                    "softness": 45,
+                    "opacity": 100,
+                    "spacing": 1,
+                    "tolerance": 35,
+                    "magic_mode": "Connected Region",
+                    "edge_protect": True,
+                },
+            },
+            "Magic Erase": {
+                "Brush": {
+                    "apply_mode": "Brush",
+                    "brush_size": 36,
+                    "softness": 55,
+                    "opacity": 100,
+                    "spacing": 1,
+                    "tolerance": 24,
+                    "magic_mode": "Connected Region",
+                    "edge_protect": True,
+                },
+                "Smart Selection": {
+                    "apply_mode": "Smart Selection",
+                    "brush_size": 36,
+                    "softness": 55,
+                    "opacity": 100,
+                    "spacing": 1,
+                    "tolerance": 24,
+                    "magic_mode": "Connected Region",
+                    "edge_protect": True,
+                },
+            },
+            "Background Erase": {
+                "Brush": {
+                    "apply_mode": "Brush",
+                    "brush_size": 36,
+                    "softness": 55,
+                    "opacity": 100,
+                    "spacing": 1,
+                    "tolerance": 20,
+                    "magic_mode": "Connected Region",
+                    "edge_protect": True,
+                },
+                "Smart Selection": {
+                    "apply_mode": "Smart Selection",
+                    "brush_size": 36,
+                    "softness": 55,
+                    "opacity": 100,
+                    "spacing": 1,
+                    "tolerance": 20,
+                    "magic_mode": "Connected Region",
+                    "edge_protect": True,
+                },
+            },
+        }
+
+        self._last_tool_name = "Erase"
+        self._last_apply_mode = "Brush"
+        self._preset_entries = []
+        self._selected_preset_name = ""
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(10, 10, 10, 10)
@@ -32,20 +143,43 @@ class SettingsPanel(QFrame):
         self.removal_mode_label = QLabel("Removal Mode")
         self.removal_mode_combo = QComboBox()
         self.removal_mode_combo.addItems(["AI Removal", "Color Removal"])
+        self.removal_mode_combo.setToolTip(
+            "Choose how the background should be removed.\n"
+            "AI Removal is the working mode.\n"
+            "Color Removal is still unfinished."
+        )
         layout.addWidget(self.removal_mode_label)
         layout.addWidget(self.removal_mode_combo)
 
         self.model_label = QLabel("Model")
         self.model_combo = QComboBox()
-        self.model_combo.addItems(["u2net", "u2netp", "isnet-general-use"])
+        self.model_combo.addItems([
+            "u2net",
+            "u2netp",
+            "u2net_human_seg",
+            "isnet-general-use",
+            "isnet-anime",
+            "birefnet-general-lite",
+            "birefnet-general",
+            "birefnet-portrait",
+            "bria-rmbg",
+        ])
         self.model_combo.setCurrentText("u2netp")
         layout.addWidget(self.model_label)
         layout.addWidget(self.model_combo)
+
+        self._apply_model_item_tooltips()
+
+        self.model_hint_label = QLabel("")
+        self.model_hint_label.setWordWrap(True)
+        self.model_hint_label.setStyleSheet("color: #cfcfcf; font-size: 11px;")
+        layout.addWidget(self.model_hint_label)
 
         self.output_format_label = QLabel("Output Format")
         self.output_format_combo = QComboBox()
         self.output_format_combo.addItems(["PNG", "JPG", "WEBP"])
         self.output_format_combo.setCurrentText("PNG")
+        self.output_format_combo.setToolTip("Choose the final exported file format.")
         layout.addWidget(self.output_format_label)
         layout.addWidget(self.output_format_combo)
 
@@ -53,17 +187,23 @@ class SettingsPanel(QFrame):
         self.background_mode_combo = QComboBox()
         self.background_mode_combo.addItems(["Transparent", "Solid Color"])
         self.background_mode_combo.setCurrentText("Transparent")
+        self.background_mode_combo.setToolTip(
+            "Transparent keeps the cutout background transparent.\n"
+            "Solid Color fills the background with a chosen color."
+        )
         layout.addWidget(self.background_mode_label)
         layout.addWidget(self.background_mode_combo)
 
         self.background_color_label = QLabel("Solid Background Color")
         self.background_color_combo = QComboBox()
         self.background_color_combo.addItems(["White", "Black"])
+        self.background_color_combo.setToolTip("Used only when Background Mode is set to Solid Color.")
         layout.addWidget(self.background_color_label)
         layout.addWidget(self.background_color_combo)
 
         self.output_dir_label = QLabel("Output Directory")
         self.output_dir_edit = QLineEdit()
+        self.output_dir_edit.setPlaceholderText("Choose a folder for exported files")
         self.output_dir_btn = QPushButton("Choose Output Folder")
         self.open_output_btn = QPushButton("Open Output Folder")
 
@@ -77,11 +217,12 @@ class SettingsPanel(QFrame):
 
         self.naming_label = QLabel("Filename Suffix")
         self.naming_edit = QLineEdit("_nobg")
+        self.naming_edit.setToolTip(
+            "This text is added to the exported filename.\n"
+            "The selected model name is also included automatically."
+        )
         layout.addWidget(self.naming_label)
         layout.addWidget(self.naming_edit)
-
-        self.export_zip_check = QCheckBox("Export successful results as ZIP")
-        layout.addWidget(self.export_zip_check)
 
         self.tool_section_label = QLabel("Editing Tools")
         self.tool_section_label.setObjectName("panelTitle")
@@ -90,40 +231,67 @@ class SettingsPanel(QFrame):
         self.tool_label = QLabel("Tool")
         self.tool_combo = QComboBox()
         self.tool_combo.addItems(["Erase", "Restore", "Magic Erase", "Background Erase"])
+        self.tool_combo.setToolTip(
+            "Choose the editing tool.\n"
+            "All tools can use Brush or Smart Selection mode."
+        )
         layout.addWidget(self.tool_label)
         layout.addWidget(self.tool_combo)
 
+        self.tool_preset_label = QLabel("Preset")
+        self.tool_preset_combo = QComboBox()
+        self.tool_preset_combo.addItem("(No preset selected)", None)
+        self.tool_preset_apply_btn = QPushButton("Apply Preset")
+
+        tool_preset_row = QHBoxLayout()
+        tool_preset_row.addWidget(self.tool_preset_combo, 1)
+        tool_preset_row.addWidget(self.tool_preset_apply_btn)
+
+        layout.addWidget(self.tool_preset_label)
+        layout.addLayout(tool_preset_row)
+
         self.apply_mode_label = QLabel("Apply Mode")
         self.apply_mode_combo = QComboBox()
-        self.apply_mode_combo.addItems(["Brush", "Click"])
+        self.apply_mode_combo.addItems(["Brush", "Smart Selection"])
         self.apply_mode_combo.setCurrentText("Brush")
+        self.apply_mode_combo.setToolTip(
+            "Brush = drag across the image.\n"
+            "Smart Selection = apply an intelligent one-shot selection from the clicked point."
+        )
         layout.addWidget(self.apply_mode_label)
         layout.addWidget(self.apply_mode_combo)
+
+        self.magic_mode_label = QLabel("Magic Mode")
+        self.magic_mode_combo = QComboBox()
+        self.magic_mode_combo.addItems(["Connected Region", "Global Match"])
+        self.magic_mode_combo.setCurrentText("Connected Region")
+        self.magic_mode_combo.setToolTip(
+            "Connected Region affects only the touching matched area.\n"
+            "Global Match affects all matching pixels."
+        )
+        layout.addWidget(self.magic_mode_label)
+        layout.addWidget(self.magic_mode_combo)
+
+        self.edge_protect_check = QCheckBox("Edge Protect")
+        self.edge_protect_check.setChecked(True)
+        self.edge_protect_check.setToolTip(
+            "Reduce harsh erasing near likely subject edges for Magic Erase and Background Erase."
+        )
+        layout.addWidget(self.edge_protect_check)
 
         self.brush_size_label = QLabel("Brush Size")
         self.brush_size_slider = QSlider(Qt.Orientation.Horizontal)
         self.brush_size_slider.setRange(1, 200)
         self.brush_size_slider.setValue(40)
+        self.brush_size_slider.setToolTip("Size of the brush area.")
         layout.addWidget(self.brush_size_label)
         layout.addWidget(self.brush_size_slider)
-
-        self.tolerance_label = QLabel("Tolerance")
-        self.tolerance_slider = QSlider(Qt.Orientation.Horizontal)
-        self.tolerance_slider.setRange(0, 255)
-        self.tolerance_slider.setValue(35)
-        layout.addWidget(self.tolerance_label)
-        layout.addWidget(self.tolerance_slider)
-
-        self.phase_note = QLabel(
-            "Watch folder automation can monitor a folder and auto-load new images."
-        )
-        self.phase_note.setWordWrap(True)
-        layout.addWidget(self.phase_note)
 
         self.softness_label = QLabel("Softness")
         self.softness_slider = QSlider(Qt.Orientation.Horizontal)
         self.softness_slider.setRange(0, 100)
         self.softness_slider.setValue(35)
+        self.softness_slider.setToolTip("Lower = harder edge. Higher = softer feathered edge.")
         layout.addWidget(self.softness_label)
         layout.addWidget(self.softness_slider)
 
@@ -131,21 +299,37 @@ class SettingsPanel(QFrame):
         self.opacity_slider = QSlider(Qt.Orientation.Horizontal)
         self.opacity_slider.setRange(1, 100)
         self.opacity_slider.setValue(100)
+        self.opacity_slider.setToolTip("Lower values apply weaker strokes.")
         layout.addWidget(self.opacity_label)
         layout.addWidget(self.opacity_slider)
 
         self.spacing_label = QLabel("Spacing")
         self.spacing_slider = QSlider(Qt.Orientation.Horizontal)
         self.spacing_slider.setRange(1, 100)
-        self.spacing_slider.setValue(20)
+        self.spacing_slider.setValue(1)
+        self.spacing_slider.setToolTip("Lower values place tool stamps closer together during brush strokes.")
         layout.addWidget(self.spacing_label)
         layout.addWidget(self.spacing_slider)
+
+        self.tolerance_label = QLabel("Tolerance")
+        self.tolerance_slider = QSlider(Qt.Orientation.Horizontal)
+        self.tolerance_slider.setRange(0, 255)
+        self.tolerance_slider.setValue(35)
+        self.tolerance_slider.setToolTip("Tolerance for Magic Erase and Background Erase.")
+        layout.addWidget(self.tolerance_label)
+        layout.addWidget(self.tolerance_slider)
+
+        self.phase_note = QLabel(
+            "Only controls that affect the selected tool and mode are shown. "
+            "Brush presets, Smart Selection presets, and full presets are filtered here."
+        )
+        self.phase_note.setWordWrap(True)
+        layout.addWidget(self.phase_note)
 
         self.threshold_label = QLabel("Color Threshold")
         self.threshold_slider = QSlider(Qt.Orientation.Horizontal)
         self.threshold_slider.setRange(0, 255)
         self.threshold_slider.setValue(30)
-
         self.pick_color_btn = QPushButton("Pick Color")
 
         layout.addWidget(self.threshold_label)
@@ -156,37 +340,250 @@ class SettingsPanel(QFrame):
         self.watch_section_label.setObjectName("panelTitle")
         layout.addWidget(self.watch_section_label)
 
+        self.watch_folder_path_label = QLabel("Watch Folder Path")
         self.watch_folder_edit = QLineEdit()
+        self.watch_folder_edit.setPlaceholderText("Choose a folder to monitor")
         self.watch_folder_btn = QPushButton("Choose Watch Folder")
         self.watch_include_subfolders_check = QCheckBox("Include subfolders in watch folder")
         self.watch_enable_check = QCheckBox("Enable watch folder automation")
         self.watch_status_label = QLabel("Watch status: Off")
 
-        layout.addWidget(QLabel("Watch Folder Path"))
+        layout.addWidget(self.watch_folder_path_label)
         layout.addWidget(self.watch_folder_edit)
         layout.addWidget(self.watch_folder_btn)
         layout.addWidget(self.watch_include_subfolders_check)
         layout.addWidget(self.watch_enable_check)
         layout.addWidget(self.watch_status_label)
 
-        self.process_selected_btn = QPushButton("Process Selected")
-        self.process_all_btn = QPushButton("Process All")
-        self.cancel_btn = QPushButton("Cancel")
+        self.action_section_label = QLabel("Process/Export")
+        self.action_section_label.setObjectName("panelTitle")
+        layout.addWidget(self.action_section_label)
 
-        layout.addWidget(self.process_selected_btn)
-        layout.addWidget(self.process_all_btn)
+        action_row = QHBoxLayout()
+
+        self.action_combo = QComboBox()
+        self.action_combo.addItems(["Process", "Export"])
+        self.action_combo.setToolTip(
+            "Process = preview/background removal only.\n"
+            "Export = final full-resolution output."
+        )
+
+        self.target_combo = QComboBox()
+        self.target_combo.addItems(["Selected", "All"])
+        self.target_combo.setToolTip("Selected means the items with checkmarks.")
+
+        self.run_action_btn = QPushButton("Run")
+        self.run_action_btn.setToolTip("Run the selected Action on the selected Target.")
+
+        action_row.addWidget(self.action_combo, 1)
+        action_row.addWidget(self.target_combo, 1)
+        action_row.addWidget(self.run_action_btn)
+
+        layout.addLayout(action_row)
+
+        self.export_zip_check = QCheckBox("Export successful results as ZIP")
+        self.export_zip_check.setToolTip("For batch export, also create a ZIP containing the exported files.")
+        layout.addWidget(self.export_zip_check)
+
+        self.overwrite_exports_check = QCheckBox("Overwrite existing exports")
+        self.overwrite_exports_check.setToolTip("Reuse the same output filename instead of creating numbered duplicates.")
+        layout.addWidget(self.overwrite_exports_check)
+
+        self.skip_exported_check = QCheckBox("Skip already exported items")
+        self.skip_exported_check.setToolTip("During batch export, skip items already marked as exported.")
+        layout.addWidget(self.skip_exported_check)
+
+        self.open_output_after_export_check = QCheckBox("Open output folder when export finishes")
+        self.open_output_after_export_check.setToolTip("Open the export folder automatically after a successful export batch.")
+        layout.addWidget(self.open_output_after_export_check)
+
+        self.skip_processed_check = QCheckBox("Skip already processed items")
+        self.skip_processed_check.setToolTip("During batch process, skip items that already have a processed preview.")
+        layout.addWidget(self.skip_processed_check)
+
+        self.cancel_btn = QPushButton("Cancel")
+        self.cancel_btn.hide()
+        self.cancel_btn.setToolTip("Stop after the current item finishes.")
         layout.addWidget(self.cancel_btn)
+
         layout.addStretch()
 
         self.output_dir_btn.clicked.connect(self.choose_output_dir)
         self.watch_folder_btn.clicked.connect(self.choose_watch_folder)
         self.removal_mode_combo.currentTextChanged.connect(self.update_mode_visibility)
         self.background_mode_combo.currentTextChanged.connect(self.update_background_visibility)
-        self.tool_combo.currentTextChanged.connect(self.update_tool_visibility)
+        self.tool_combo.currentTextChanged.connect(self._on_tool_changed)
+        self.apply_mode_combo.currentTextChanged.connect(self._on_apply_mode_changed)
+        self.model_combo.currentTextChanged.connect(self.update_model_hint)
+        self.tool_preset_apply_btn.clicked.connect(self._emit_tool_preset_apply_requested)
 
+        self.update_model_hint()
         self.update_mode_visibility()
         self.update_background_visibility()
+        self._apply_defaults_for_tool_and_mode(
+            self.tool_combo.currentText(),
+            self.apply_mode_combo.currentText(),
+        )
         self.update_tool_visibility()
+        self._refresh_preset_combo_for_current_context()
+
+    def _emit_tool_preset_apply_requested(self):
+        entry = self.current_preset_entry()
+        if not entry:
+            return
+
+        preset_name = str(entry.get("name", "")).strip()
+        preset_store = str(entry.get("store", "")).strip()
+
+        if preset_name and preset_store:
+            self.tool_preset_apply_requested.emit(
+                self.tool_combo.currentText(),
+                preset_name,
+                preset_store,
+            )
+
+    def current_preset_entry(self):
+        return self.tool_preset_combo.currentData()
+
+    def set_tool_preset_entries(self, preset_entries: list[dict], preferred_name: str = ""):
+        self._preset_entries = list(preset_entries)
+        if preferred_name:
+            self._selected_preset_name = preferred_name
+        self._refresh_preset_combo_for_current_context()
+
+    def set_tool_preset_options(self, preset_names: list[str], preferred_name: str = ""):
+        entries = []
+        for name in preset_names:
+            entries.append({
+                "store": "tool",
+                "scope": "mode_brush",
+                "type_label": "Mode Preset",
+                "tool_name": self.tool_combo.currentText(),
+                "mode_name": self.apply_mode_combo.currentText(),
+                "name": name,
+                "display_name": name,
+                "notes": "",
+            })
+        self.set_tool_preset_entries(entries, preferred_name=preferred_name)
+
+    def _refresh_preset_combo_for_current_context(self):
+        current_tool = self.tool_combo.currentText()
+        current_mode = self.apply_mode_combo.currentText()
+        preferred_name = self._selected_preset_name or self.tool_preset_combo.currentText()
+
+        filtered_entries = []
+        for entry in self._preset_entries:
+            store = str(entry.get("store", "")).strip()
+            scope = str(entry.get("scope", "")).strip()
+            tool_name = str(entry.get("tool_name", "")).strip()
+
+            if store == "full":
+                filtered_entries.append(entry)
+                continue
+
+            if store == "tool":
+                if scope == "mode_brush" and tool_name == current_tool and current_mode == "Brush":
+                    filtered_entries.append(entry)
+                elif scope == "mode_smart_selection" and tool_name == current_tool and current_mode == "Smart Selection":
+                    filtered_entries.append(entry)
+                elif scope == "tool" and tool_name == current_tool:
+                    filtered_entries.append(entry)
+
+        self.tool_preset_combo.blockSignals(True)
+        self.tool_preset_combo.clear()
+        self.tool_preset_combo.addItem("(No preset selected)", None)
+
+        for entry in filtered_entries:
+            display_name = str(entry.get("display_name", entry.get("name", ""))).strip()
+            self.tool_preset_combo.addItem(display_name, entry)
+
+        preferred_index = 0
+        for index in range(1, self.tool_preset_combo.count()):
+            entry = self.tool_preset_combo.itemData(index)
+            if not entry:
+                continue
+            if str(entry.get("name", "")).strip() == preferred_name:
+                preferred_index = index
+                break
+
+        self.tool_preset_combo.setCurrentIndex(preferred_index)
+        self.tool_preset_combo.blockSignals(False)
+
+    def _apply_model_item_tooltips(self):
+        for i in range(self.model_combo.count()):
+            model_name = self.model_combo.itemText(i)
+            description = self.model_descriptions.get(model_name, "")
+            self.model_combo.setItemData(i, description, Qt.ItemDataRole.ToolTipRole)
+
+    def _get_defaults_for_tool_and_mode(self, tool_name: str, apply_mode: str):
+        tool_defaults = self.tool_defaults.get(tool_name, {})
+        mode_defaults = tool_defaults.get(apply_mode)
+        if mode_defaults is not None:
+            return mode_defaults
+
+        if tool_defaults:
+            first_mode = next(iter(tool_defaults))
+            return tool_defaults[first_mode]
+
+        return None
+
+    def _apply_defaults_for_tool_and_mode(self, tool_name: str, apply_mode: str):
+        defaults = self._get_defaults_for_tool_and_mode(tool_name, apply_mode)
+        if defaults is None:
+            return
+
+        widgets = [
+            self.apply_mode_combo,
+            self.magic_mode_combo,
+            self.edge_protect_check,
+            self.brush_size_slider,
+            self.softness_slider,
+            self.opacity_slider,
+            self.spacing_slider,
+            self.tolerance_slider,
+        ]
+
+        for widget in widgets:
+            widget.blockSignals(True)
+
+        self.apply_mode_combo.setCurrentText(defaults["apply_mode"])
+        self.magic_mode_combo.setCurrentText(defaults.get("magic_mode", "Connected Region"))
+        self.edge_protect_check.setChecked(defaults.get("edge_protect", True))
+        self.brush_size_slider.setValue(defaults["brush_size"])
+        self.softness_slider.setValue(defaults["softness"])
+        self.opacity_slider.setValue(defaults["opacity"])
+        self.spacing_slider.setValue(defaults["spacing"])
+        self.tolerance_slider.setValue(defaults["tolerance"])
+
+        for widget in widgets:
+            widget.blockSignals(False)
+
+        self._last_tool_name = self.tool_combo.currentText()
+        self._last_apply_mode = self.apply_mode_combo.currentText()
+
+    def _on_tool_changed(self, tool_name: str):
+        previous_tool = self._last_tool_name
+        previous_mode = self._last_apply_mode
+        self.tool_mode_about_to_change.emit(previous_tool, previous_mode)
+
+        self._apply_defaults_for_tool_and_mode(tool_name, self.apply_mode_combo.currentText())
+        self.update_tool_visibility()
+        self._refresh_preset_combo_for_current_context()
+
+        self._last_tool_name = self.tool_combo.currentText()
+        self._last_apply_mode = self.apply_mode_combo.currentText()
+
+    def _on_apply_mode_changed(self, apply_mode: str):
+        previous_tool = self.tool_combo.currentText()
+        previous_mode = self._last_apply_mode
+        self.tool_mode_about_to_change.emit(previous_tool, previous_mode)
+
+        self._apply_defaults_for_tool_and_mode(self.tool_combo.currentText(), apply_mode)
+        self.update_tool_visibility()
+        self._refresh_preset_combo_for_current_context()
+
+        self._last_tool_name = self.tool_combo.currentText()
+        self._last_apply_mode = self.apply_mode_combo.currentText()
 
     def choose_output_dir(self):
         folder = QFileDialog.getExistingDirectory(self, "Choose Output Folder")
@@ -198,6 +595,12 @@ class SettingsPanel(QFrame):
         if folder:
             self.watch_folder_edit.setText(folder)
 
+    def update_model_hint(self):
+        model_name = self.model_combo.currentText()
+        description = self.model_descriptions.get(model_name, "")
+        self.model_combo.setToolTip(description)
+        self.model_hint_label.setText(description)
+
     def update_mode_visibility(self):
         is_color_mode = self.removal_mode_combo.currentText() == "Color Removal"
 
@@ -207,6 +610,7 @@ class SettingsPanel(QFrame):
 
         self.model_label.setEnabled(not is_color_mode)
         self.model_combo.setEnabled(not is_color_mode)
+        self.model_hint_label.setEnabled(not is_color_mode)
 
     def update_background_visibility(self):
         is_solid = self.background_mode_combo.currentText() == "Solid Color"
@@ -215,37 +619,82 @@ class SettingsPanel(QFrame):
 
     def update_tool_visibility(self):
         tool_name = self.tool_combo.currentText()
-        is_click_tool = tool_name in ("Magic Erase", "Background Erase")
+        apply_mode = self.apply_mode_combo.currentText()
 
-        self.tolerance_label.setVisible(is_click_tool)
-        self.tolerance_slider.setVisible(is_click_tool)
+        is_brush = apply_mode == "Brush"
+        is_smart = apply_mode == "Smart Selection"
+        is_erase_restore = tool_name in ("Erase", "Restore")
+        is_magic = tool_name == "Magic Erase"
+        is_background = tool_name == "Background Erase"
 
-        self.brush_size_label.setVisible(not is_click_tool)
-        self.brush_size_slider.setVisible(not is_click_tool)
+        show_brush_size = (
+            (is_erase_restore and is_brush)
+            or (is_erase_restore and is_smart)
+            or (is_magic and is_brush)
+            or (is_background and is_brush)
+        )
+
+        show_softness = (
+            (is_erase_restore and is_brush)
+            or (is_erase_restore and is_smart)
+            or (is_magic and is_brush)
+            or (is_background and is_brush)
+        )
+
+        show_opacity = (
+            (is_erase_restore and is_brush)
+            or (is_erase_restore and is_smart)
+            or is_magic
+            or is_background
+        )
+
+        show_spacing = (
+            (is_erase_restore and is_brush)
+            or (is_magic and is_brush)
+            or (is_background and is_brush)
+        )
+
+        show_tolerance = (
+            is_magic
+            or is_background
+        )
+
+        show_magic_mode = is_magic
+        show_edge_protect = is_magic or is_background
+
+        self.magic_mode_label.setVisible(show_magic_mode)
+        self.magic_mode_combo.setVisible(show_magic_mode)
+        self.magic_mode_combo.setEnabled(show_magic_mode)
+
+        self.edge_protect_check.setVisible(show_edge_protect)
+        self.edge_protect_check.setEnabled(show_edge_protect)
+
+        self.tolerance_label.setVisible(show_tolerance)
+        self.tolerance_slider.setVisible(show_tolerance)
+        self.tolerance_slider.setEnabled(show_tolerance)
+
+        self.brush_size_label.setVisible(show_brush_size)
+        self.brush_size_slider.setVisible(show_brush_size)
+
+        self.softness_label.setVisible(show_softness)
+        self.softness_slider.setVisible(show_softness)
+
+        self.opacity_label.setVisible(show_opacity)
+        self.opacity_slider.setVisible(show_opacity)
+
+        self.spacing_label.setVisible(show_spacing)
+        self.spacing_slider.setVisible(show_spacing)
 
         self.apply_mode_label.setVisible(True)
         self.apply_mode_combo.setVisible(True)
+        self.apply_mode_combo.setEnabled(True)
 
         self.phase_note.setVisible(True)
 
-        self.softness_label.setVisible(True)
-        self.softness_slider.setVisible(True)
-        self.opacity_label.setVisible(True)
-        self.opacity_slider.setVisible(True)
-        self.spacing_label.setVisible(True)
-        self.spacing_slider.setVisible(True)
-
-        self.softness_slider.setEnabled(False)
-        self.opacity_slider.setEnabled(False)
-        self.spacing_slider.setEnabled(False)
-
-        self.softness_label.setText("Softness (disabled)")
-        self.opacity_label.setText("Opacity (disabled)")
-        self.spacing_label.setText("Spacing (disabled)")
-
-        if is_click_tool:
-            self.apply_mode_combo.setCurrentText("Click")
-            self.apply_mode_combo.setEnabled(False)
-        else:
-            self.apply_mode_combo.setCurrentText("Brush")
-            self.apply_mode_combo.setEnabled(False)
+        self.watch_section_label.setVisible(False)
+        self.watch_folder_path_label.setVisible(False)
+        self.watch_folder_edit.setVisible(False)
+        self.watch_folder_btn.setVisible(False)
+        self.watch_include_subfolders_check.setVisible(False)
+        self.watch_enable_check.setVisible(False)
+        self.watch_status_label.setVisible(False)

@@ -11,6 +11,7 @@ from PySide6.QtWidgets import (
     QComboBox,
     QCheckBox,
     QAbstractItemView,
+    QSizePolicy,
 )
 
 
@@ -21,10 +22,7 @@ class FilePanel(QFrame):
     type_filter_changed = Signal(str)
     view_mode_changed = Signal(str)
     checked_items_changed = Signal()
-
-    process_checked_requested = Signal()
-    remove_checked_requested = Signal()
-    uncheck_completed_requested = Signal()
+    thumbnail_mode_changed = Signal(str)
 
     def __init__(self):
         super().__init__()
@@ -34,6 +32,7 @@ class FilePanel(QFrame):
         self.setMinimumWidth(320)
 
         self.current_view_mode = "thumbnail"
+        self.current_thumbnail_mode = "working"
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(10, 10, 10, 10)
@@ -44,6 +43,9 @@ class FilePanel(QFrame):
         layout.addWidget(title)
 
         self.include_subfolders_check = QCheckBox("Include subfolders on drag/drop")
+        self.include_subfolders_check.setToolTip(
+            "When dropping folders, also load supported images from subfolders."
+        )
         layout.addWidget(self.include_subfolders_check)
 
         controls_row = QHBoxLayout()
@@ -52,16 +54,19 @@ class FilePanel(QFrame):
         self.sort_combo = QComboBox()
         self.sort_combo.addItems(["Sort by", "Date Added", "Name", "Type", "Status"])
         self.sort_combo.setCurrentText("Sort by")
+        self.sort_combo.setToolTip("Change the order of items in the file panel.")
 
         self.status_filter_combo = QComboBox()
         self.status_filter_combo.addItems(
-            ["Filter status", "All", "pending", "processing", "done", "error", "edited"]
+            ["Filter status", "All", "pending", "processing", "processed", "edited", "exported", "error"]
         )
         self.status_filter_combo.setCurrentText("Filter status")
+        self.status_filter_combo.setToolTip("Show only items with a specific status.")
 
         self.type_filter_combo = QComboBox()
         self.type_filter_combo.addItems(["Filter type", "All Types"])
         self.type_filter_combo.setCurrentText("Filter type")
+        self.type_filter_combo.setToolTip("Show only items of a specific file type.")
 
         controls_row.addWidget(self.sort_combo, 1)
         controls_row.addWidget(self.status_filter_combo, 1)
@@ -72,19 +77,29 @@ class FilePanel(QFrame):
         top_actions.setSpacing(6)
 
         self.check_all_box = QCheckBox("Check All Visible")
+        self.check_all_box.setToolTip("Check or uncheck every item currently visible in the file panel.")
+
+        self.original_thumb_btn = QPushButton("Original")
+        self.original_thumb_btn.setCheckable(True)
+        self.original_thumb_btn.setChecked(False)
+        self.original_thumb_btn.setToolTip(
+            "When enabled, file panel thumbnails show the original image. "
+            "When disabled, they show the working image."
+        )
 
         self.thumbnail_view_btn = QPushButton("▦")
         self.thumbnail_view_btn.setCheckable(True)
         self.thumbnail_view_btn.setFixedSize(32, 32)
-        self.thumbnail_view_btn.setToolTip("Thumbnail View")
+        self.thumbnail_view_btn.setToolTip("Show items in thumbnail view.")
 
         self.list_view_btn = QPushButton("☰")
         self.list_view_btn.setCheckable(True)
         self.list_view_btn.setFixedSize(32, 32)
-        self.list_view_btn.setToolTip("List View")
+        self.list_view_btn.setToolTip("Show items in list view.")
 
         top_actions.addWidget(self.check_all_box)
         top_actions.addStretch()
+        top_actions.addWidget(self.original_thumb_btn)
         top_actions.addWidget(self.thumbnail_view_btn)
         top_actions.addWidget(self.list_view_btn)
         layout.addLayout(top_actions)
@@ -93,7 +108,7 @@ class FilePanel(QFrame):
         counts_row.setSpacing(12)
 
         self.visible_count_label = QLabel("Visible: 0")
-        self.checked_count_label = QLabel("Checked: 0")
+        self.checked_count_label = QLabel("Selected: 0")
 
         counts_row.addWidget(self.visible_count_label)
         counts_row.addWidget(self.checked_count_label)
@@ -108,40 +123,56 @@ class FilePanel(QFrame):
         self.file_view.setResizeMode(QListWidget.ResizeMode.Adjust)
         self.file_view.setMovement(QListWidget.Movement.Static)
         self.file_view.setWordWrap(True)
-        self.file_view.setMinimumHeight(420)
+        self.file_view.setMinimumHeight(0)
+        self.file_view.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
+        self.file_view.setToolTip(
+            "Single-click selects an item for preview. Double-click toggles its checkmark."
+        )
         layout.addWidget(self.file_view, 1)
 
-        checked_row = QHBoxLayout()
-        checked_row.setSpacing(6)
-
-        self.process_checked_btn = QPushButton("Process Checked")
-        self.remove_checked_btn = QPushButton("Remove Checked")
-        self.uncheck_completed_btn = QPushButton("Uncheck Completed")
-
-        checked_row.addWidget(self.process_checked_btn)
-        checked_row.addWidget(self.remove_checked_btn)
-        checked_row.addWidget(self.uncheck_completed_btn)
-        layout.addLayout(checked_row)
-
         action_row_1 = QHBoxLayout()
+        action_row_1.setSpacing(6)
+
         self.remove_selected_btn = QPushButton("Remove Selected")
-        self.clear_completed_btn = QPushButton("Clear Completed")
+        self.remove_selected_btn.setToolTip(
+            "Remove the checked items from the file list. This does not delete the original image files from disk."
+        )
+
+        self.reset_selected_btn = QPushButton("Reset Selected")
+        self.reset_selected_btn.setToolTip(
+            "Reset the checked items back to their original state and clear processed/edited working state."
+        )
+
+        self.open_output_btn = QPushButton("Open Output Folder")
+        self.open_output_btn.setToolTip(
+            "Open the current output folder. If no output folder is set, open the selected image's source folder."
+        )
+
         action_row_1.addWidget(self.remove_selected_btn)
-        action_row_1.addWidget(self.clear_completed_btn)
+        action_row_1.addWidget(self.reset_selected_btn)
+        action_row_1.addWidget(self.open_output_btn)
         layout.addLayout(action_row_1)
 
         action_row_2 = QHBoxLayout()
-        self.clear_all_btn = QPushButton("Clear All")
-        self.retry_failed_btn = QPushButton("Retry Failed")
-        action_row_2.addWidget(self.clear_all_btn)
-        action_row_2.addWidget(self.retry_failed_btn)
-        layout.addLayout(action_row_2)
+        action_row_2.setSpacing(6)
 
-        self.open_output_btn = QPushButton("Open Output Folder")
-        layout.addWidget(self.open_output_btn)
+        self.clear_completed_btn = QPushButton("Clear All Exported")
+        self.clear_completed_btn.setToolTip(
+            "Remove every loaded item whose status is exported from the file list."
+        )
+
+        self.clear_all_btn = QPushButton("Clear All")
+        self.clear_all_btn.setToolTip(
+            "Remove every loaded item from the file list. This does not delete the original image files from disk."
+        )
+
+        action_row_2.addWidget(self.clear_completed_btn)
+        action_row_2.addWidget(self.clear_all_btn)
+        layout.addLayout(action_row_2)
 
         self.file_view.currentRowChanged.connect(self._emit_selected_item)
         self.file_view.itemChanged.connect(self._on_item_changed)
+        self.file_view.itemDoubleClicked.connect(self._toggle_item_checked)
 
         self.sort_combo.currentTextChanged.connect(self._emit_sort_changed)
         self.status_filter_combo.currentTextChanged.connect(self._emit_status_filter_changed)
@@ -150,10 +181,7 @@ class FilePanel(QFrame):
         self.thumbnail_view_btn.clicked.connect(lambda: self.set_view_mode("thumbnail"))
         self.list_view_btn.clicked.connect(lambda: self.set_view_mode("list"))
         self.check_all_box.toggled.connect(self._toggle_all_visible)
-
-        self.process_checked_btn.clicked.connect(self.process_checked_requested)
-        self.remove_checked_btn.clicked.connect(self.remove_checked_requested)
-        self.uncheck_completed_btn.clicked.connect(self.uncheck_completed_requested)
+        self.original_thumb_btn.toggled.connect(self._on_original_toggled)
 
         self._update_view_buttons()
         self._apply_view_mode()
@@ -184,6 +212,10 @@ class FilePanel(QFrame):
         self._update_view_buttons()
         self._apply_view_mode()
         self.view_mode_changed.emit(mode)
+
+    def _on_original_toggled(self, checked: bool):
+        self.current_thumbnail_mode = "original" if checked else "working"
+        self.thumbnail_mode_changed.emit(self.current_thumbnail_mode)
 
     def _update_view_buttons(self):
         is_thumbnail = self.current_view_mode == "thumbnail"
@@ -300,6 +332,21 @@ class FilePanel(QFrame):
         self._update_counts()
         self.checked_items_changed.emit()
 
+    def _toggle_item_checked(self, item: QListWidgetItem):
+        if item is None:
+            return
+
+        self.file_view.blockSignals(True)
+        if item.checkState() == Qt.CheckState.Checked:
+            item.setCheckState(Qt.CheckState.Unchecked)
+        else:
+            item.setCheckState(Qt.CheckState.Checked)
+        self.file_view.blockSignals(False)
+
+        self._sync_master_checkbox()
+        self._update_counts()
+        self.checked_items_changed.emit()
+
     def _sync_master_checkbox(self):
         total = self.file_view.count()
         checked_count = 0
@@ -322,7 +369,7 @@ class FilePanel(QFrame):
         visible_count = self.file_view.count()
         checked_count = len(self.get_checked_user_indices())
         self.visible_count_label.setText(f"Visible: {visible_count}")
-        self.checked_count_label.setText(f"Checked: {checked_count}")
+        self.checked_count_label.setText(f"Selected: {checked_count}")
 
     def _emit_selected_item(self, row: int):
         if row < 0:
