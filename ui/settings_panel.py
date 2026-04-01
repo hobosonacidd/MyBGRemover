@@ -9,6 +9,8 @@ from PySide6.QtWidgets import (
     QCheckBox,
     QSlider,
     QHBoxLayout,
+    QWidget,
+    QSpinBox,
 )
 from PySide6.QtCore import Qt, Signal
 
@@ -280,44 +282,39 @@ class SettingsPanel(QFrame):
         layout.addWidget(self.edge_protect_check)
 
         self.brush_size_label = QLabel("Brush Size")
-        self.brush_size_slider = QSlider(Qt.Orientation.Horizontal)
-        self.brush_size_slider.setRange(1, 200)
+        self.brush_size_row, self.brush_size_slider, self.brush_size_value_box = self._create_slider_row(1, 200)
         self.brush_size_slider.setValue(40)
         self.brush_size_slider.setToolTip("Size of the brush area.")
         layout.addWidget(self.brush_size_label)
-        layout.addWidget(self.brush_size_slider)
+        layout.addWidget(self.brush_size_row)
 
         self.softness_label = QLabel("Softness")
-        self.softness_slider = QSlider(Qt.Orientation.Horizontal)
-        self.softness_slider.setRange(0, 100)
+        self.softness_row, self.softness_slider, self.softness_value_box = self._create_slider_row(0, 100)
         self.softness_slider.setValue(35)
         self.softness_slider.setToolTip("Lower = harder edge. Higher = softer feathered edge.")
         layout.addWidget(self.softness_label)
-        layout.addWidget(self.softness_slider)
+        layout.addWidget(self.softness_row)
 
         self.opacity_label = QLabel("Opacity")
-        self.opacity_slider = QSlider(Qt.Orientation.Horizontal)
-        self.opacity_slider.setRange(1, 100)
+        self.opacity_row, self.opacity_slider, self.opacity_value_box = self._create_slider_row(1, 100)
         self.opacity_slider.setValue(100)
         self.opacity_slider.setToolTip("Lower values apply weaker strokes.")
         layout.addWidget(self.opacity_label)
-        layout.addWidget(self.opacity_slider)
+        layout.addWidget(self.opacity_row)
 
         self.spacing_label = QLabel("Spacing")
-        self.spacing_slider = QSlider(Qt.Orientation.Horizontal)
-        self.spacing_slider.setRange(1, 100)
+        self.spacing_row, self.spacing_slider, self.spacing_value_box = self._create_slider_row(1, 100)
         self.spacing_slider.setValue(1)
         self.spacing_slider.setToolTip("Lower values place tool stamps closer together during brush strokes.")
         layout.addWidget(self.spacing_label)
-        layout.addWidget(self.spacing_slider)
+        layout.addWidget(self.spacing_row)
 
         self.tolerance_label = QLabel("Tolerance")
-        self.tolerance_slider = QSlider(Qt.Orientation.Horizontal)
-        self.tolerance_slider.setRange(0, 255)
+        self.tolerance_row, self.tolerance_slider, self.tolerance_value_box = self._create_slider_row(0, 255)
         self.tolerance_slider.setValue(35)
         self.tolerance_slider.setToolTip("Tolerance for Magic Erase and Background Erase.")
         layout.addWidget(self.tolerance_label)
-        layout.addWidget(self.tolerance_slider)
+        layout.addWidget(self.tolerance_row)
 
         self.phase_note = QLabel(
             "Only controls that affect the selected tool and mode are shown. "
@@ -426,6 +423,36 @@ class SettingsPanel(QFrame):
         )
         self.update_tool_visibility()
         self._refresh_preset_combo_for_current_context()
+
+    def _create_slider_row(self, min_value: int, max_value: int):
+        row_widget = QWidget()
+        row_layout = QHBoxLayout(row_widget)
+        row_layout.setContentsMargins(0, 0, 0, 0)
+        row_layout.setSpacing(8)
+
+        slider = QSlider(Qt.Orientation.Horizontal, row_widget)
+        slider.setRange(min_value, max_value)
+
+        value_box = QSpinBox(row_widget)
+        value_box.setRange(min_value, max_value)
+        value_box.setFixedWidth(72)
+        value_box.setKeyboardTracking(False)
+
+        slider.valueChanged.connect(value_box.setValue)
+        value_box.valueChanged.connect(slider.setValue)
+
+        row_layout.addWidget(slider, 1)
+        row_layout.addWidget(value_box)
+
+        return row_widget, slider, value_box
+
+    def _set_slider_and_box_value(self, slider: QSlider, value_box: QSpinBox, value: int):
+        slider.blockSignals(True)
+        value_box.blockSignals(True)
+        slider.setValue(value)
+        value_box.setValue(value)
+        slider.blockSignals(False)
+        value_box.blockSignals(False)
 
     def _emit_tool_preset_apply_requested(self):
         entry = self.current_preset_entry()
@@ -549,11 +576,32 @@ class SettingsPanel(QFrame):
         self.apply_mode_combo.setCurrentText(defaults["apply_mode"])
         self.magic_mode_combo.setCurrentText(defaults.get("magic_mode", "Connected Region"))
         self.edge_protect_check.setChecked(defaults.get("edge_protect", True))
-        self.brush_size_slider.setValue(defaults["brush_size"])
-        self.softness_slider.setValue(defaults["softness"])
-        self.opacity_slider.setValue(defaults["opacity"])
-        self.spacing_slider.setValue(defaults["spacing"])
-        self.tolerance_slider.setValue(defaults["tolerance"])
+
+        self._set_slider_and_box_value(
+            self.brush_size_slider,
+            self.brush_size_value_box,
+            defaults["brush_size"],
+        )
+        self._set_slider_and_box_value(
+            self.softness_slider,
+            self.softness_value_box,
+            defaults["softness"],
+        )
+        self._set_slider_and_box_value(
+            self.opacity_slider,
+            self.opacity_value_box,
+            defaults["opacity"],
+        )
+        self._set_slider_and_box_value(
+            self.spacing_slider,
+            self.spacing_value_box,
+            defaults["spacing"],
+        )
+        self._set_slider_and_box_value(
+            self.tolerance_slider,
+            self.tolerance_value_box,
+            defaults["tolerance"],
+        )
 
         for widget in widgets:
             widget.blockSignals(False)
@@ -622,43 +670,38 @@ class SettingsPanel(QFrame):
         apply_mode = self.apply_mode_combo.currentText()
 
         is_brush = apply_mode == "Brush"
-        is_smart = apply_mode == "Smart Selection"
         is_erase_restore = tool_name in ("Erase", "Restore")
         is_magic = tool_name == "Magic Erase"
         is_background = tool_name == "Background Erase"
 
         show_brush_size = (
-            (is_erase_restore and is_brush)
-            or (is_erase_restore and is_smart)
+            (is_erase_restore and apply_mode == "Brush")
+            or (is_erase_restore and apply_mode == "Smart Selection")
             or (is_magic and is_brush)
             or (is_background and is_brush)
         )
 
         show_softness = (
-            (is_erase_restore and is_brush)
-            or (is_erase_restore and is_smart)
+            (is_erase_restore and apply_mode == "Brush")
+            or (is_erase_restore and apply_mode == "Smart Selection")
             or (is_magic and is_brush)
             or (is_background and is_brush)
         )
 
         show_opacity = (
-            (is_erase_restore and is_brush)
-            or (is_erase_restore and is_smart)
+            (is_erase_restore and apply_mode == "Brush")
+            or (is_erase_restore and apply_mode == "Smart Selection")
             or is_magic
             or is_background
         )
 
         show_spacing = (
-            (is_erase_restore and is_brush)
+            (is_erase_restore and apply_mode == "Brush")
             or (is_magic and is_brush)
             or (is_background and is_brush)
         )
 
-        show_tolerance = (
-            is_magic
-            or is_background
-        )
-
+        show_tolerance = is_magic or is_background
         show_magic_mode = is_magic
         show_edge_protect = is_magic or is_background
 
@@ -670,20 +713,29 @@ class SettingsPanel(QFrame):
         self.edge_protect_check.setEnabled(show_edge_protect)
 
         self.tolerance_label.setVisible(show_tolerance)
-        self.tolerance_slider.setVisible(show_tolerance)
+        self.tolerance_row.setVisible(show_tolerance)
         self.tolerance_slider.setEnabled(show_tolerance)
+        self.tolerance_value_box.setEnabled(show_tolerance)
 
         self.brush_size_label.setVisible(show_brush_size)
-        self.brush_size_slider.setVisible(show_brush_size)
+        self.brush_size_row.setVisible(show_brush_size)
+        self.brush_size_slider.setEnabled(show_brush_size)
+        self.brush_size_value_box.setEnabled(show_brush_size)
 
         self.softness_label.setVisible(show_softness)
-        self.softness_slider.setVisible(show_softness)
+        self.softness_row.setVisible(show_softness)
+        self.softness_slider.setEnabled(show_softness)
+        self.softness_value_box.setEnabled(show_softness)
 
         self.opacity_label.setVisible(show_opacity)
-        self.opacity_slider.setVisible(show_opacity)
+        self.opacity_row.setVisible(show_opacity)
+        self.opacity_slider.setEnabled(show_opacity)
+        self.opacity_value_box.setEnabled(show_opacity)
 
         self.spacing_label.setVisible(show_spacing)
-        self.spacing_slider.setVisible(show_spacing)
+        self.spacing_row.setVisible(show_spacing)
+        self.spacing_slider.setEnabled(show_spacing)
+        self.spacing_value_box.setEnabled(show_spacing)
 
         self.apply_mode_label.setVisible(True)
         self.apply_mode_combo.setVisible(True)

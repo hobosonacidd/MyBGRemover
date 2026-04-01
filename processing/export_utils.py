@@ -16,10 +16,31 @@ BACKGROUND_COLOR_MAP = {
 }
 
 
+MAX_FILENAME_LENGTH = 180
+
+
 def sanitize_output_stem(stem: str) -> str:
     bad_chars = '<>:"/\\|?*'
     cleaned = "".join("_" if ch in bad_chars else ch for ch in stem)
-    return cleaned.strip().rstrip(".")
+
+    cleaned = " ".join(cleaned.split())
+    cleaned = cleaned.strip().rstrip(".")
+    cleaned = cleaned.replace("\n", " ").replace("\r", " ").replace("\t", " ")
+
+    return cleaned or "export"
+
+
+def _truncate_base_name(base_name: str, extension: str, counter_suffix: str = "") -> str:
+    max_base_length = MAX_FILENAME_LENGTH - len(extension) - len(counter_suffix)
+
+    if max_base_length < 1:
+        max_base_length = 1
+
+    if len(base_name) <= max_base_length:
+        return base_name
+
+    trimmed = base_name[:max_base_length].rstrip(" ._-")
+    return trimmed or "export"
 
 
 def build_output_path(
@@ -31,7 +52,13 @@ def build_output_path(
 ) -> Path:
     extension = FORMAT_MAP.get(output_format.upper(), ".png")
     safe_stem = sanitize_output_stem(source_path.stem)
-    base_name = f"{safe_stem}{suffix}"
+    safe_suffix = sanitize_output_stem(suffix).replace(" ", "_")
+
+    if safe_suffix and not safe_suffix.startswith("_"):
+        safe_suffix = f"_{safe_suffix}"
+
+    base_name = f"{safe_stem}{safe_suffix}"
+    base_name = _truncate_base_name(base_name, extension)
 
     candidate = output_dir / f"{base_name}{extension}"
 
@@ -40,7 +67,9 @@ def build_output_path(
 
     counter = 1
     while candidate.exists():
-        candidate = output_dir / f"{base_name}_{counter}{extension}"
+        counter_suffix = f"_{counter}"
+        numbered_base_name = _truncate_base_name(base_name, extension, counter_suffix=counter_suffix)
+        candidate = output_dir / f"{numbered_base_name}{counter_suffix}{extension}"
         counter += 1
 
     return candidate

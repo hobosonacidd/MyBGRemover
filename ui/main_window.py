@@ -1,7 +1,7 @@
 from pathlib import Path
 import hashlib
 
-from PySide6.QtCore import Qt, QThread, QUrl, QSettings, QSignalBlocker
+from PySide6.QtCore import Qt, QThread, QUrl, QSettings, QSignalBlocker, QTimer
 from PySide6.QtGui import QDesktopServices, QAction, QKeySequence
 from PySide6.QtWidgets import (
     QMainWindow,
@@ -76,7 +76,7 @@ class MainWindow(QMainWindow):
         if self.watch_worker_thread is not None and self.watch_worker_thread.isRunning():
             self.watch_worker_thread.quit()
             self.watch_worker_thread.wait(3000)
-            
+
     def __init__(self):
         super().__init__()
         self.setWindowTitle("MyBGRemover")
@@ -148,7 +148,7 @@ class MainWindow(QMainWindow):
         self.settings_scroll.setMinimumWidth(320)
         self.settings_scroll.setMaximumWidth(380)
         self.settings_scroll.setFrameShape(QFrame.Shape.NoFrame)
-        
+
         self._create_menu_bar()
 
         content_splitter.addWidget(self.file_panel)
@@ -202,9 +202,9 @@ class MainWindow(QMainWindow):
         self._apply_basic_styles()
         self._connect_signals()
         self._restore_persistent_settings()
-        self._sync_preview_tool_settings()
         self._update_watch_status_label(False, "")
         self.preview_canvas.clear_preview()
+        QTimer.singleShot(0, self._finalize_editor_restore_after_startup)
 
         self.log("MyBGRemover started.")
         self.log("Drag and drop files or folders into the window.")
@@ -260,7 +260,7 @@ class MainWindow(QMainWindow):
                 text-align: center;
             }
         """)
-        
+
     def _create_menu_bar(self):
         menu_bar = self.menuBar()
 
@@ -413,6 +413,9 @@ class MainWindow(QMainWindow):
             fallback,
             type=str,
         )
+
+    def _editor_mode_key(self, mode_name: str) -> str:
+        return mode_name.lower().replace(" ", "_")
 
     def _apply_general_preferences_to_ui(self):
         model_name = self._general_preference_default("model", "u2netp")
@@ -693,7 +696,7 @@ class MainWindow(QMainWindow):
 
     def _editor_preference_default(self, tool_name: str, apply_mode: str, key: str, fallback):
         tool_key = tool_name.lower().replace(" ", "_")
-        mode_key = apply_mode.lower().replace(" ", "_")
+        mode_key = self._editor_mode_key(apply_mode)
         return self.settings_store.value(
             f"editor_defaults/{tool_key}/{mode_key}/{key}",
             fallback,
@@ -1015,16 +1018,11 @@ class MainWindow(QMainWindow):
             self._apply_general_preferences_to_ui()
             self._sync_settings_panel_tool_defaults_from_preferences()
 
-            current_tool = self.settings_panel.tool_combo.currentText()
-            current_apply_mode = self.settings_panel.apply_mode_combo.currentText()
-            self.settings_panel._apply_defaults_for_tool_and_mode(current_tool, current_apply_mode)
-            self.settings_panel.update_tool_visibility()
-
-            self._persist_editor_settings()
-            self._sync_preview_tool_settings()
             self._apply_menu_shortcuts()
             self._rebuild_recent_menu()
             self._refresh_main_panel_tool_preset_options()
+
+            QTimer.singleShot(0, self._finalize_editor_restore_after_startup)
 
             self.log("Preferences updated.")
             self.log("General settings, startup preset, editor defaults, shortcuts, file panel defaults, per-mode live editor state, and tool preset lists were reloaded from Preferences.")
@@ -1040,6 +1038,7 @@ class MainWindow(QMainWindow):
         self.file_panel.remove_selected_btn.clicked.connect(self.remove_checked_items)
         self.file_panel.reset_selected_btn.clicked.connect(self.undo_all_selected_to_originals)
         self.file_panel.clear_completed_btn.clicked.connect(self.clear_completed_items)
+        self.file_panel.retry_failed_btn.clicked.connect(self.retry_failed_items)
         self.file_panel.clear_all_btn.clicked.connect(self.clear_all_items)
         self.file_panel.open_output_btn.clicked.connect(self.open_output_folder)
 
@@ -1076,7 +1075,7 @@ class MainWindow(QMainWindow):
 
         self.preview_canvas.image_edited.connect(self._on_preview_image_edited)
         self.preview_canvas.edits_reset.connect(self._on_preview_edits_reset)
-   
+
     def _startup_preset_name(self) -> str:
         return self.settings_store.value("general/startup_preset", "", type=str).strip()
 
@@ -1096,7 +1095,7 @@ class MainWindow(QMainWindow):
         for tool_name in tool_names:
             tool_key = tool_name.lower().replace(" ", "_")
             for mode_name in mode_names:
-                mode_key = mode_name.lower().replace(" ", "_")
+                mode_key = self._editor_mode_key(mode_name)
                 for value_key in value_keys:
                     preset_value = self.settings_store.value(
                         f"editor_presets/{preset_name}/{tool_key}/{mode_key}/{value_key}"
@@ -1106,7 +1105,15 @@ class MainWindow(QMainWindow):
                             f"editor_defaults/{tool_key}/{mode_key}/{value_key}",
                             preset_value,
                         )
-        
+
+    def _has_startup_preset(self) -> bool:
+        return bool(self._startup_preset_name())
+
+    def _finalize_editor_restore_after_startup(self):
+        self._sync_settings_panel_tool_defaults_from_preferences()
+        self._restore_editor_settings()
+        self._sync_preview_tool_settings()
+
     def _restore_persistent_settings(self):
         self._ensure_builtin_starter_presets()
 
@@ -1121,11 +1128,10 @@ class MainWindow(QMainWindow):
         self._apply_startup_preset_to_editor_defaults()
         self._apply_general_preferences_to_ui()
         self._sync_settings_panel_tool_defaults_from_preferences()
-        self._restore_editor_settings()
         self._apply_menu_shortcuts()
         self._refresh_main_panel_tool_preset_options()
-        
-        
+
+
 
     def _restore_editor_settings(self):
         tool_name = self.settings_store.value("editor/tool_name", "Erase", type=str)
@@ -1139,13 +1145,33 @@ class MainWindow(QMainWindow):
         default_magic_mode = self._editor_preference_default(tool_name, apply_mode, "magic_mode", "Connected Region")
         default_edge_protect = self._editor_preference_default(tool_name, apply_mode, "edge_protect", True)
 
-        magic_mode = self._editor_state_value(tool_name, apply_mode, "magic_mode", default_magic_mode)
-        edge_protect = self._editor_state_value(tool_name, apply_mode, "edge_protect", default_edge_protect)
-        brush_size = self._editor_state_value(tool_name, apply_mode, "brush_size", default_brush_size)
-        softness = self._editor_state_value(tool_name, apply_mode, "softness", default_softness)
-        opacity = self._editor_state_value(tool_name, apply_mode, "opacity", default_opacity)
-        spacing = self._editor_state_value(tool_name, apply_mode, "spacing", default_spacing)
-        tolerance = self._editor_state_value(tool_name, apply_mode, "tolerance", default_tolerance)
+        if self._has_startup_preset():
+            magic_mode = default_magic_mode
+            edge_protect = default_edge_protect
+            brush_size = default_brush_size
+            softness = default_softness
+            opacity = default_opacity
+            spacing = default_spacing
+            tolerance = default_tolerance
+        else:
+            startup_preset_name = self._startup_preset_name()
+
+        if startup_preset_name:
+            magic_mode = default_magic_mode
+            edge_protect = default_edge_protect
+            brush_size = default_brush_size
+            softness = default_softness
+            opacity = default_opacity
+            spacing = default_spacing
+            tolerance = default_tolerance
+        else:
+            magic_mode = self._editor_state_value(tool_name, apply_mode, "magic_mode", default_magic_mode)
+            edge_protect = self._editor_state_value(tool_name, apply_mode, "edge_protect", default_edge_protect)
+            brush_size = self._editor_state_value(tool_name, apply_mode, "brush_size", default_brush_size)
+            softness = self._editor_state_value(tool_name, apply_mode, "softness", default_softness)
+            opacity = self._editor_state_value(tool_name, apply_mode, "opacity", default_opacity)
+            spacing = self._editor_state_value(tool_name, apply_mode, "spacing", default_spacing)
+            tolerance = self._editor_state_value(tool_name, apply_mode, "tolerance", default_tolerance)
 
         controls = [
             self.settings_panel.tool_combo,
@@ -1182,12 +1208,18 @@ class MainWindow(QMainWindow):
             control.blockSignals(False)
 
         self.settings_panel.update_tool_visibility()
-
     def _editor_state_value(self, tool_name: str, apply_mode: str, key: str, fallback):
         tool_key = tool_name.lower().replace(" ", "_")
-        mode_key = apply_mode.lower().replace(" ", "_")
+        mode_key = self._editor_mode_key(apply_mode)
         return self.settings_store.value(
             f"editor_state/{tool_key}/{mode_key}/{key}",
+            fallback,
+            type=type(fallback),
+        )
+
+    def _current_editor_value(self, key: str, fallback):
+        return self.settings_store.value(
+            f"editor/current/{key}",
             fallback,
             type=type(fallback),
         )
@@ -1197,7 +1229,7 @@ class MainWindow(QMainWindow):
             return
 
         tool_key = tool_name.lower().replace(" ", "_")
-        mode_key = apply_mode.lower().replace(" ", "_")
+        mode_key = self._editor_mode_key(apply_mode).replace(" ", "_")
 
         self.settings_store.setValue("editor/tool_name", tool_name)
         self.settings_store.setValue("editor/apply_mode", apply_mode)
@@ -1337,43 +1369,52 @@ class MainWindow(QMainWindow):
             self.settings_panel.magic_mode_combo,
             self.settings_panel.edge_protect_check,
             self.settings_panel.brush_size_slider,
+            self.settings_panel.brush_size_value_box,
             self.settings_panel.softness_slider,
+            self.settings_panel.softness_value_box,
             self.settings_panel.opacity_slider,
+            self.settings_panel.opacity_value_box,
             self.settings_panel.spacing_slider,
+            self.settings_panel.spacing_value_box,
             self.settings_panel.tolerance_slider,
+            self.settings_panel.tolerance_value_box,
         ]
 
         for widget in widgets:
             widget.blockSignals(True)
 
-        is_brush = mode_name == "Brush"
-        is_smart = mode_name == "Smart Selection"
-        is_erase_restore = tool_name in ("Erase", "Restore")
-        is_magic = tool_name == "Magic Erase"
-        is_background = tool_name == "Background Erase"
+        self.settings_panel._set_slider_and_box_value(
+            self.settings_panel.brush_size_slider,
+            self.settings_panel.brush_size_value_box,
+            int(merged.get("brush_size", 42)),
+        )
+        self.settings_panel._set_slider_and_box_value(
+            self.settings_panel.softness_slider,
+            self.settings_panel.softness_value_box,
+            int(merged.get("softness", 35)),
+        )
+        self.settings_panel._set_slider_and_box_value(
+            self.settings_panel.opacity_slider,
+            self.settings_panel.opacity_value_box,
+            int(merged.get("opacity", 100)),
+        )
+        self.settings_panel._set_slider_and_box_value(
+            self.settings_panel.spacing_slider,
+            self.settings_panel.spacing_value_box,
+            int(merged.get("spacing", 1)),
+        )
+        self.settings_panel._set_slider_and_box_value(
+            self.settings_panel.tolerance_slider,
+            self.settings_panel.tolerance_value_box,
+            int(merged.get("tolerance", 35)),
+        )
 
-        if (is_erase_restore and is_brush) or (is_erase_restore and is_smart) or (is_magic and is_brush) or (is_background and is_brush):
-            self.settings_panel.brush_size_slider.setValue(int(merged.get("brush_size", 42)))
-
-        if (is_erase_restore and is_brush) or (is_erase_restore and is_smart) or (is_magic and is_brush) or (is_background and is_brush):
-            self.settings_panel.softness_slider.setValue(int(merged.get("softness", 35)))
-
-        if (is_erase_restore and is_brush) or (is_erase_restore and is_smart) or is_magic or is_background:
-            self.settings_panel.opacity_slider.setValue(int(merged.get("opacity", 100)))
-
-        if (is_erase_restore and is_brush) or (is_magic and is_brush) or (is_background and is_brush):
-            self.settings_panel.spacing_slider.setValue(int(merged.get("spacing", 1)))
-
-        if is_magic or is_background:
-            self.settings_panel.tolerance_slider.setValue(int(merged.get("tolerance", 35)))
-
-        if is_magic:
-            self.settings_panel.magic_mode_combo.setCurrentText(
-                str(merged.get("magic_mode", "Connected Region"))
-            )
-
-        if is_magic or is_background:
-            self.settings_panel.edge_protect_check.setChecked(bool(merged.get("edge_protect", True)))
+        self.settings_panel.magic_mode_combo.setCurrentText(
+            str(merged.get("magic_mode", "Connected Region"))
+        )
+        self.settings_panel.edge_protect_check.setChecked(
+            bool(merged.get("edge_protect", True))
+        )
 
         for widget in widgets:
             widget.blockSignals(False)
@@ -1465,17 +1506,29 @@ class MainWindow(QMainWindow):
         }
 
         self._apply_editor_values_to_settings_panel(tool_name, mode_name, values)
-        
+
     def _persist_output_dir(self, text: str):
         self.settings_store.setValue("output_dir", text)
 
     def _persist_naming_suffix(self, text: str):
         self.settings_store.setValue("naming_suffix", text)
-        
+
     def _persist_editor_settings(self):
         current_tool = self.settings_panel.tool_combo.currentText()
         current_apply_mode = self.settings_panel.apply_mode_combo.currentText()
-        self._persist_specific_editor_state(current_tool, current_apply_mode) 
+
+        self.settings_store.setValue("editor/tool_name", current_tool)
+        self.settings_store.setValue("editor/apply_mode", current_apply_mode)
+
+        self.settings_store.setValue("editor/current/magic_mode", self.settings_panel.magic_mode_combo.currentText())
+        self.settings_store.setValue("editor/current/edge_protect", self.settings_panel.edge_protect_check.isChecked())
+        self.settings_store.setValue("editor/current/brush_size", self.settings_panel.brush_size_slider.value())
+        self.settings_store.setValue("editor/current/softness", self.settings_panel.softness_slider.value())
+        self.settings_store.setValue("editor/current/opacity", self.settings_panel.opacity_slider.value())
+        self.settings_store.setValue("editor/current/spacing", self.settings_panel.spacing_slider.value())
+        self.settings_store.setValue("editor/current/tolerance", self.settings_panel.tolerance_slider.value())
+
+        self._persist_specific_editor_state(current_tool, current_apply_mode)
 
     def _sync_preview_tool_settings(self):
         self.preview_canvas.set_tool_settings(
@@ -1548,6 +1601,52 @@ class MainWindow(QMainWindow):
         if checked:
             return checked
         return list(range(len(self.state.items)))
+
+    def _summarize_process_candidates(self, indices: list[int], skip_processed: bool):
+        valid_indices = []
+        skipped_missing_preview = 0
+        skipped_already_processed = 0
+
+        for index in indices:
+            if not (0 <= index < len(self.state.items)):
+                continue
+
+            item = self.state.items[index]
+
+            has_preview_source = (
+                (item.preview_path is not None and Path(item.preview_path).exists())
+                or self._has_edited_preview(item)
+            )
+
+            if not has_preview_source:
+                skipped_missing_preview += 1
+                continue
+
+            if skip_processed and self._has_processed_preview(item):
+                skipped_already_processed += 1
+                continue
+
+            valid_indices.append(index)
+
+        return valid_indices, skipped_missing_preview, skipped_already_processed
+
+    def _summarize_export_candidates(self, indices: list[int], skip_exported: bool):
+        valid_indices = []
+        skipped_already_exported = 0
+
+        for index in indices:
+            if not (0 <= index < len(self.state.items)):
+                continue
+
+            item = self.state.items[index]
+
+            if skip_exported and item.status == "exported":
+                skipped_already_exported += 1
+                continue
+
+            valid_indices.append(index)
+
+        return valid_indices, skipped_already_exported
 
     def _has_processed_preview(self, item: ImageItem) -> bool:
         return item.processed_preview_path is not None and Path(item.processed_preview_path).exists()
@@ -1900,7 +1999,7 @@ class MainWindow(QMainWindow):
         self.rebuild_file_panel(reload_preview=False)
         self.select_item(selected_index)
         self.log(f"Reset edits: {item.filename}")
-        
+
     def remove_selected_item(self):
         if self.processing_active:
             QMessageBox.information(self, "Processing", "Wait for processing to finish first.")
@@ -1969,7 +2068,7 @@ class MainWindow(QMainWindow):
         self.preview_canvas.clear_preview()
 
         self.log(f"Cleared exported items: {removed_count}")
-        
+
     def undo_all_selected_to_originals(self):
         if self.processing_active:
             QMessageBox.information(self, "Processing", "Wait for processing to finish first.")
@@ -2132,24 +2231,37 @@ class MainWindow(QMainWindow):
 
         skip_processed = self.settings_panel.skip_processed_check.isChecked()
 
-        self.batch_queue = [
-            index for index in checked
-            if 0 <= index < len(self.state.items)
-            and (
-                (self.state.items[index].preview_path is not None and Path(self.state.items[index].preview_path).exists())
-                or self._has_edited_preview(self.state.items[index])
-            )
-            and not (
-                skip_processed
-                and self._has_processed_preview(self.state.items[index])
-            )
-        ]
+        self.batch_queue, skipped_missing_preview, skipped_already_processed = self._summarize_process_candidates(
+            checked,
+            skip_processed,
+        )
+
+        if skipped_missing_preview:
+            self.log(f"Skipped {skipped_missing_preview} selected item(s) with no valid preview data to process.")
+
+        if skipped_already_processed:
+            self.log(f"Skipped {skipped_already_processed} selected item(s) already marked as processed.")
 
         if not self.batch_queue:
+            message_parts = []
+
+            if skipped_missing_preview:
+                message_parts.append(
+                    f"{skipped_missing_preview} selected item(s) had no valid preview data."
+                )
+
+            if skipped_already_processed:
+                message_parts.append(
+                    f"{skipped_already_processed} selected item(s) were skipped because Skip Already Processed is enabled."
+                )
+
+            if not message_parts:
+                message_parts.append("No selected items were available to process.")
+
             QMessageBox.information(
                 self,
-                "No Valid Images",
-                "The selected files do not have valid preview data to process.",
+                "Nothing To Process",
+                "\n".join(message_parts),
             )
             return
 
@@ -2184,21 +2296,38 @@ class MainWindow(QMainWindow):
 
         skip_processed = self.settings_panel.skip_processed_check.isChecked()
 
-        self.batch_queue = [
-            index
-            for index in range(len(self.state.items))
-            if (
-                (self.state.items[index].preview_path is not None and Path(self.state.items[index].preview_path).exists())
-                or self._has_edited_preview(self.state.items[index])
-            )
-            and not (
-                skip_processed
-                and self._has_processed_preview(self.state.items[index])
-            )
-        ]
+        self.batch_queue, skipped_missing_preview, skipped_already_processed = self._summarize_process_candidates(
+            list(range(len(self.state.items))),
+            skip_processed,
+        )
+
+        if skipped_missing_preview:
+            self.log(f"Skipped {skipped_missing_preview} item(s) with no valid preview data to process.")
+
+        if skipped_already_processed:
+            self.log(f"Skipped {skipped_already_processed} item(s) already marked as processed.")
 
         if not self.batch_queue:
-            QMessageBox.information(self, "No Valid Images", "There are no valid images to process.")
+            message_parts = []
+
+            if skipped_missing_preview:
+                message_parts.append(
+                    f"{skipped_missing_preview} item(s) had no valid preview data."
+                )
+
+            if skipped_already_processed:
+                message_parts.append(
+                    f"{skipped_already_processed} item(s) were skipped because Skip Already Processed is enabled."
+                )
+
+            if not message_parts:
+                message_parts.append("No items were available to process.")
+
+            QMessageBox.information(
+                self,
+                "Nothing To Process",
+                "\n".join(message_parts),
+            )
             return
 
         self.batch_mode = True
@@ -2284,18 +2413,30 @@ class MainWindow(QMainWindow):
 
         skip_exported = self.settings_panel.skip_exported_check.isChecked()
 
-        self.batch_queue = [
-            index
-            for index in checked
-            if 0 <= index < len(self.state.items)
-            and not (
-                skip_exported
-                and self.state.items[index].status == "exported"
-            )
-        ]
+        self.batch_queue, skipped_already_exported = self._summarize_export_candidates(
+            checked,
+            skip_exported,
+        )
+
+        if skipped_already_exported:
+            self.log(f"Skipped {skipped_already_exported} selected item(s) already marked as exported.")
 
         if not self.batch_queue:
-            QMessageBox.information(self, "No Valid Images", "The selected files are not valid for export.")
+            message_parts = []
+
+            if skipped_already_exported:
+                message_parts.append(
+                    f"{skipped_already_exported} selected item(s) were skipped because Skip Already Exported is enabled."
+                )
+
+            if not message_parts:
+                message_parts.append("No selected items were available to export.")
+
+            QMessageBox.information(
+                self,
+                "Nothing To Export",
+                "\n".join(message_parts),
+            )
             return
 
         self.batch_total = len(self.batch_queue)
@@ -2337,14 +2478,32 @@ class MainWindow(QMainWindow):
 
         skip_exported = self.settings_panel.skip_exported_check.isChecked()
 
-        self.batch_queue = [
-            index
-            for index in range(len(self.state.items))
-            if not (
-                skip_exported
-                and self.state.items[index].status == "exported"
+        self.batch_queue, skipped_already_exported = self._summarize_export_candidates(
+            list(range(len(self.state.items))),
+            skip_exported,
+        )
+
+        if skipped_already_exported:
+            self.log(f"Skipped {skipped_already_exported} item(s) already marked as exported.")
+
+        if not self.batch_queue:
+            message_parts = []
+
+            if skipped_already_exported:
+                message_parts.append(
+                    f"{skipped_already_exported} item(s) were skipped because Skip Already Exported is enabled."
+                )
+
+            if not message_parts:
+                message_parts.append("No items were available to export.")
+
+            QMessageBox.information(
+                self,
+                "Nothing To Export",
+                "\n".join(message_parts),
             )
-        ]
+            return
+
         self.batch_mode = True
         self.batch_action = "export"
         self.batch_total = len(self.batch_queue)
@@ -2405,7 +2564,7 @@ class MainWindow(QMainWindow):
 
         if hasattr(self.file_panel, "process_checked_btn"):
             self.file_panel.process_checked_btn.setEnabled(enabled)
-            
+
     def _scroll_settings_to_bottom(self):
         if hasattr(self, "settings_scroll") and self.settings_scroll is not None:
             bar = self.settings_scroll.verticalScrollBar()
@@ -2682,7 +2841,7 @@ class MainWindow(QMainWindow):
         self.log(f"Error: {error_message}")
         self._finalize_preview_thread()
         self._handle_post_item_completion(error=True)
-        
+
     def _on_full_export_finished(self, item_index: int, _fullres_cache_path: str, output_path_str: str):
         item = self.state.get_item(item_index)
         if item is not None:
@@ -2755,6 +2914,22 @@ class MainWindow(QMainWindow):
                 else:
                     self.log(f"ZIP export failed: {err}")
 
+        completed_count = self.batch_processed_count
+        success_count = self.batch_success_count
+        error_count = self.batch_error_count
+        skipped_count = max(0, completed_count - success_count - error_count)
+
+        if self.batch_action == "export":
+            self.log(
+                f"Export session summary: completed {completed_count}, "
+                f"succeeded {success_count}, failed {error_count}, skipped {skipped_count}."
+            )
+        elif self.batch_action == "process":
+            self.log(
+                f"Process session summary: completed {completed_count}, "
+                f"succeeded {success_count}, failed {error_count}, skipped {skipped_count}."
+            )
+
         self.batch_mode = False
         self.batch_action = None
         self.batch_queue = []
@@ -2822,5 +2997,6 @@ class MainWindow(QMainWindow):
         self.cancel_requested = True
         self._stop_watch_folder()
         self._shutdown_running_threads()
+        self._persist_editor_settings()
         self.settings_store.sync()
         super().closeEvent(event)

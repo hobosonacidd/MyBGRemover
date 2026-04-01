@@ -43,6 +43,9 @@ class FilePanel(QFrame):
         layout.addWidget(title)
 
         self.include_subfolders_check = QCheckBox("Include subfolders on drag/drop")
+        self.include_subfolders_check.setToolTip(
+            "When dropping folders, also load supported images from subfolders."
+        )
         layout.addWidget(self.include_subfolders_check)
 
         controls_row = QHBoxLayout()
@@ -51,16 +54,19 @@ class FilePanel(QFrame):
         self.sort_combo = QComboBox()
         self.sort_combo.addItems(["Sort by", "Date Added", "Name", "Type", "Status"])
         self.sort_combo.setCurrentText("Sort by")
+        self.sort_combo.setToolTip("Change the order of items in the file panel.")
 
         self.status_filter_combo = QComboBox()
         self.status_filter_combo.addItems(
             ["Filter status", "All", "pending", "processing", "processed", "edited", "exported", "error"]
         )
         self.status_filter_combo.setCurrentText("Filter status")
+        self.status_filter_combo.setToolTip("Show only items with a specific status.")
 
         self.type_filter_combo = QComboBox()
         self.type_filter_combo.addItems(["Filter type", "All Types"])
         self.type_filter_combo.setCurrentText("Filter type")
+        self.type_filter_combo.setToolTip("Show only items of a specific file type.")
 
         controls_row.addWidget(self.sort_combo, 1)
         controls_row.addWidget(self.status_filter_combo, 1)
@@ -71,21 +77,25 @@ class FilePanel(QFrame):
         top_actions.setSpacing(6)
 
         self.check_all_box = QCheckBox("Check All Visible")
+        self.check_all_box.setToolTip("Check or uncheck every item currently visible in the file panel.")
 
         self.original_thumb_btn = QPushButton("Original")
         self.original_thumb_btn.setCheckable(True)
         self.original_thumb_btn.setChecked(False)
-        self.original_thumb_btn.setToolTip("Show original thumbnails in the file panel")
+        self.original_thumb_btn.setToolTip(
+            "When enabled, file panel thumbnails show the original image. "
+            "When disabled, they show the working image."
+        )
 
         self.thumbnail_view_btn = QPushButton("▦")
         self.thumbnail_view_btn.setCheckable(True)
         self.thumbnail_view_btn.setFixedSize(32, 32)
-        self.thumbnail_view_btn.setToolTip("Thumbnail View")
+        self.thumbnail_view_btn.setToolTip("Show items in thumbnail view.")
 
         self.list_view_btn = QPushButton("☰")
         self.list_view_btn.setCheckable(True)
         self.list_view_btn.setFixedSize(32, 32)
-        self.list_view_btn.setToolTip("List View")
+        self.list_view_btn.setToolTip("Show items in list view.")
 
         top_actions.addWidget(self.check_all_box)
         top_actions.addStretch()
@@ -115,24 +125,50 @@ class FilePanel(QFrame):
         self.file_view.setWordWrap(True)
         self.file_view.setMinimumHeight(0)
         self.file_view.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
+        self.file_view.setToolTip(
+            "Single-click selects an item for preview. Double-click toggles its checkmark."
+        )
         layout.addWidget(self.file_view, 1)
 
         action_row_1 = QHBoxLayout()
+        action_row_1.setSpacing(6)
+
         self.remove_selected_btn = QPushButton("Remove Selected")
-        self.clear_completed_btn = QPushButton("Clear Exported")
+        self.remove_selected_btn.setToolTip(
+            "Remove the checked items from the file list. This does not delete the original image files from disk."
+        )
+
+        self.reset_selected_btn = QPushButton("Reset Selected")
+        self.reset_selected_btn.setToolTip(
+            "Reset the checked items back to their original state and clear processed/edited working state."
+        )
+
+        self.open_output_btn = QPushButton("Open Output Folder")
+        self.open_output_btn.setToolTip(
+            "Open the current output folder. If no output folder is set, open the selected image's source folder."
+        )
+
         action_row_1.addWidget(self.remove_selected_btn)
-        action_row_1.addWidget(self.clear_completed_btn)
+        action_row_1.addWidget(self.reset_selected_btn)
+        action_row_1.addWidget(self.open_output_btn)
         layout.addLayout(action_row_1)
 
         action_row_2 = QHBoxLayout()
-        self.clear_all_btn = QPushButton("Clear All")
-        self.undo_all_btn = QPushButton("Undo All Selected")
-        action_row_2.addWidget(self.clear_all_btn)
-        action_row_2.addWidget(self.undo_all_btn)
-        layout.addLayout(action_row_2)
+        action_row_2.setSpacing(6)
 
-        self.open_output_btn = QPushButton("Open Output Folder")
-        layout.addWidget(self.open_output_btn)
+        self.clear_completed_btn = QPushButton("Clear All Exported")
+        self.clear_completed_btn.setToolTip(
+            "Remove every loaded item whose status is exported from the file list."
+        )
+
+        self.clear_all_btn = QPushButton("Clear All")
+        self.clear_all_btn.setToolTip(
+            "Remove every loaded item from the file list. This does not delete the original image files from disk."
+        )
+
+        action_row_2.addWidget(self.clear_completed_btn)
+        action_row_2.addWidget(self.clear_all_btn)
+        layout.addLayout(action_row_2)
 
         self.file_view.currentRowChanged.connect(self._emit_selected_item)
         self.file_view.itemChanged.connect(self._on_item_changed)

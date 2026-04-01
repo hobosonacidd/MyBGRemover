@@ -93,6 +93,8 @@ class PreviewCanvas(QFrame):
         self._editable_save_path = None
         self._title_text = "Preview"
 
+        self._history_store = {}
+
         layout = QVBoxLayout(self)
 
         self.title_label = QLabel("Preview")
@@ -170,7 +172,48 @@ class PreviewCanvas(QFrame):
         if self._current_pixmap is not None:
             self._render_current_pixmap()
 
+    def _history_key(self):
+        if self._editable_save_path is None:
+            return None
+        return str(self._editable_save_path)
+
+    def _save_history_snapshot(self):
+        key = self._history_key()
+        if key is None:
+            return
+        if self._editable_rgba is None:
+            return
+
+        self._history_store[key] = {
+            "undo_stack": [state.copy() for state in self._undo_stack],
+            "redo_stack": [state.copy() for state in self._redo_stack],
+            "interaction_mode": self._interaction_mode,
+            "current_mode": self._current_mode,
+            "zoom_factor": self._zoom_factor,
+        }
+
+    def _restore_history_snapshot(self):
+        key = self._history_key()
+        if key is None:
+            return False
+
+        snapshot = self._history_store.get(key)
+        if snapshot is None:
+            return False
+
+        self._undo_stack = [state.copy() for state in snapshot.get("undo_stack", [])]
+        self._redo_stack = [state.copy() for state in snapshot.get("redo_stack", [])]
+        self._interaction_mode = snapshot.get("interaction_mode", self._interaction_mode)
+        self._current_mode = snapshot.get("current_mode", self._current_mode)
+        self._zoom_factor = snapshot.get("zoom_factor", self._zoom_factor)
+
+        self._pending_undo_state = None
+        self._stroke_changed = False
+        return True
+
     def clear_preview(self, reset_title: bool = True):
+        self._save_history_snapshot()
+
         self._current_pixmap = None
         self._base_fit_scale = 1.0
         self._zoom_factor = 1.0
@@ -244,7 +287,27 @@ class PreviewCanvas(QFrame):
         preferred_view_mode="after",
         **_,
     ):
-        self.clear_preview(reset_title=False)
+        self._save_history_snapshot()
+
+        self._current_pixmap = None
+        self._base_fit_scale = 1.0
+
+        self._before_image_pil = None
+        self._editable_after_image_pil = None
+        self._editable_rgba = None
+        self._restore_source_rgba = None
+        self._history_baseline_rgba = None
+        self._edit_reset_baseline_rgba = None
+
+        self._mouse_down = False
+        self._last_image_point = None
+        self._drag_edit_active = False
+        self._hover_image_point = None
+
+        self._undo_stack = []
+        self._redo_stack = []
+        self._pending_undo_state = None
+        self._stroke_changed = False
 
         self._title_text = title_text or "Preview"
         self.title_label.setText(self._title_text)
@@ -281,21 +344,13 @@ class PreviewCanvas(QFrame):
         else:
             self._restore_source_rgba = None
 
-        if self._restore_source_rgba is not None:
-            self._history_baseline_rgba = self._restore_source_rgba.copy()
-        elif self._editable_rgba is not None:
+        if self._editable_rgba is not None:
             self._history_baseline_rgba = self._editable_rgba.copy()
-        else:
-            self._history_baseline_rgba = None
 
         if loaded_after is not None:
             self._edit_reset_baseline_rgba = np.array(loaded_after)
-        elif self._before_image_pil is not None:
-            self._edit_reset_baseline_rgba = np.array(self._before_image_pil)
         elif self._editable_rgba is not None:
             self._edit_reset_baseline_rgba = self._editable_rgba.copy()
-        else:
-            self._edit_reset_baseline_rgba = None
 
         valid_modes = {"before", "after"}
         chosen_view_mode = preferred_view_mode if preferred_view_mode in valid_modes else default_mode
@@ -314,6 +369,15 @@ class PreviewCanvas(QFrame):
             self._interaction_mode = "preview"
 
         self._zoom_factor = 1.0
+
+        restored = self._restore_history_snapshot()
+
+        if not restored:
+            if self._current_mode == "after" and self._editable_after_image_pil is None:
+                self._current_mode = "before"
+            elif self._current_mode == "before" and self._before_image_pil is None:
+                self._current_mode = "after"
+
         self._load_current_mode_pixmap()
         self._update_mode_buttons()
 
@@ -354,12 +418,14 @@ class PreviewCanvas(QFrame):
             return
         self._zoom_factor = min(self._zoom_factor * 1.25, 8.0)
         self._render_current_pixmap()
+        self._save_history_snapshot()
 
     def zoom_out(self):
         if self._current_pixmap is None:
             return
         self._zoom_factor = max(self._zoom_factor / 1.25, 0.1)
         self._render_current_pixmap()
+        self._save_history_snapshot()
 
     def _can_undo(self) -> bool:
         if self._undo_stack:
@@ -377,6 +443,7 @@ class PreviewCanvas(QFrame):
         if len(self._undo_stack) > self._max_undo_states:
             self._undo_stack.pop(0)
         self._redo_stack.clear()
+        self._save_history_snapshot()
 
     def _update_mode_buttons(self):
         if self._interaction_mode == "preview":
@@ -545,6 +612,7 @@ class PreviewCanvas(QFrame):
             self._mouse_down = False
             self._last_image_point = None
             self._drag_edit_active = False
+            self._save_history_snapshot()
 
     def handle_mouse_move(self, event):
         pos = event.position().toPoint()
@@ -597,6 +665,7 @@ class PreviewCanvas(QFrame):
         self._mouse_down = False
         self._last_image_point = None
         self._drag_edit_active = False
+        self._save_history_snapshot()
 
     def handle_mouse_leave(self, event):
         self._hover_image_point = None
@@ -1191,6 +1260,7 @@ class PreviewCanvas(QFrame):
 
         self._editable_after_image_pil.save(self._editable_save_path, format="PNG")
         self.image_edited.emit(str(self._editable_save_path))
+        self._save_history_snapshot()
 
     def _finish_edit_update(self):
         self._sync_pil_from_rgba()
@@ -1214,6 +1284,7 @@ class PreviewCanvas(QFrame):
         self._interaction_mode = "edit"
         self._load_current_mode_pixmap()
         self.edits_reset.emit()
+        self._save_history_snapshot()
 
     def undo(self):
         if self._editable_rgba is None:
@@ -1236,6 +1307,7 @@ class PreviewCanvas(QFrame):
         self._current_mode = "after"
         self._interaction_mode = "edit"
         self._load_current_mode_pixmap()
+        self._save_history_snapshot()
 
     def redo(self):
         if not self._redo_stack or self._editable_rgba is None:
@@ -1252,3 +1324,4 @@ class PreviewCanvas(QFrame):
         self._current_mode = "after"
         self._interaction_mode = "edit"
         self._load_current_mode_pixmap()
+        self._save_history_snapshot()

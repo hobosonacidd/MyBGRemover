@@ -119,6 +119,7 @@ class FullExportWorker(QObject):
                     fullres_image_path=self.processed_cache_path,
                     base_preview_mask_image_path=self.base_preview_mask_path,
                     edited_preview_mask_image_path=self.edited_preview_mask_path,
+                    source_fullres_image_path=self.source_path,
                 )
 
                 if not ok:

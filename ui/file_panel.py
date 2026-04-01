@@ -161,12 +161,18 @@ class FilePanel(QFrame):
             "Remove every loaded item whose status is exported from the file list."
         )
 
+        self.retry_failed_btn = QPushButton("Retry Failed")
+        self.retry_failed_btn.setToolTip(
+            "Reset every item with status 'error' back to pending so you can try again."
+        )
+
         self.clear_all_btn = QPushButton("Clear All")
         self.clear_all_btn.setToolTip(
             "Remove every loaded item from the file list. This does not delete the original image files from disk."
         )
 
         action_row_2.addWidget(self.clear_completed_btn)
+        action_row_2.addWidget(self.retry_failed_btn)
         action_row_2.addWidget(self.clear_all_btn)
         layout.addLayout(action_row_2)
 

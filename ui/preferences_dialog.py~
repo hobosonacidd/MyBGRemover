@@ -182,6 +182,42 @@ class PreferencesDialog(QDialog):
     def _mode_names(self):
         return ["Brush", "Smart Selection"]
 
+    def _editor_field_visibility(self, tool_name: str, mode_name: str) -> dict[str, bool]:
+        is_brush = mode_name == "Brush"
+        is_smart = mode_name == "Smart Selection"
+        is_erase_restore = tool_name in ("Erase", "Restore")
+        is_magic = tool_name == "Magic Erase"
+        is_background = tool_name == "Background Erase"
+
+        return {
+            "brush_size": (
+                (is_erase_restore and is_brush)
+                or (is_erase_restore and is_smart)
+                or (is_magic and is_brush)
+                or (is_background and is_brush)
+            ),
+            "softness": (
+                (is_erase_restore and is_brush)
+                or (is_erase_restore and is_smart)
+                or (is_magic and is_brush)
+                or (is_background and is_brush)
+            ),
+            "opacity": (
+                (is_erase_restore and is_brush)
+                or (is_erase_restore and is_smart)
+                or is_magic
+                or is_background
+            ),
+            "spacing": (
+                (is_erase_restore and is_brush)
+                or (is_magic and is_brush)
+                or (is_background and is_brush)
+            ),
+            "tolerance": is_magic or is_background,
+            "magic_mode": is_magic,
+            "edge_protect": is_magic or is_background,
+        }
+
     def _create_slider_row(self, min_value: int, max_value: int, parent: QWidget | None = None):
         row_widget = QWidget(parent)
         row_layout = QHBoxLayout(row_widget)
@@ -201,6 +237,11 @@ class PreferencesDialog(QDialog):
         row_layout.addWidget(value_label)
 
         return row_widget, slider, value_label
+
+    def _create_form_label(self, text: str, parent: QWidget | None = None):
+        label = QLabel(text, parent)
+        label.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
+        return label
 
     def _build_general_tab(self):
         intro_label = QLabel(
@@ -348,15 +389,6 @@ class PreferencesDialog(QDialog):
 
         self.tool_mode_sections = {}
 
-        field_labels = {
-            "brush_size": "Brush Size",
-            "softness": "Softness",
-            "opacity": "Opacity",
-            "spacing": "Spacing",
-            "tolerance": "Tolerance",
-            "magic_mode": "Magic Mode",
-        }
-
         for tool_name in self._tool_names():
             tool_group = QGroupBox(tool_name)
             tool_layout = QVBoxLayout(tool_group)
@@ -364,54 +396,61 @@ class PreferencesDialog(QDialog):
             self.tool_mode_sections[tool_name] = {}
 
             for mode_name in self._mode_names():
-                mode_section = QWidget()
-                mode_layout = QVBoxLayout(mode_section)
-                mode_layout.setContentsMargins(8, 4, 8, 8)
-                mode_layout.setSpacing(6)
-
-                mode_header = QLabel(f"{mode_name} Defaults")
-                mode_header.setStyleSheet("font-weight: bold; font-size: 13px;")
-                mode_layout.addWidget(mode_header)
-
-                form_widget = QWidget()
-                form = QFormLayout(form_widget)
-                form.setContentsMargins(0, 0, 0, 0)
+                mode_group = QGroupBox(f"{mode_name} Defaults")
+                form = QFormLayout(mode_group)
                 form.setLabelAlignment(Qt.AlignmentFlag.AlignLeft)
 
-                brush_size_row, brush_size_slider, brush_size_value = self._create_slider_row(1, 200, form_widget)
-                softness_row, softness_slider, softness_value = self._create_slider_row(0, 100, form_widget)
-                opacity_row, opacity_slider, opacity_value = self._create_slider_row(1, 100, form_widget)
-                spacing_row, spacing_slider, spacing_value = self._create_slider_row(1, 100, form_widget)
-                tolerance_row, tolerance_slider, tolerance_value = self._create_slider_row(0, 255, form_widget)
+                visible_mode_header = QLabel(f"{mode_name} Defaults", mode_group)
+                visible_mode_header.setStyleSheet("font-weight: bold; font-size: 13px;")
+                form.addRow(visible_mode_header)
 
-                magic_mode_combo = QComboBox(form_widget)
+                brush_size_row, brush_size_slider, brush_size_value = self._create_slider_row(1, 200, mode_group)
+                softness_row, softness_slider, softness_value = self._create_slider_row(0, 100, mode_group)
+                opacity_row, opacity_slider, opacity_value = self._create_slider_row(1, 100, mode_group)
+                spacing_row, spacing_slider, spacing_value = self._create_slider_row(1, 100, mode_group)
+                tolerance_row, tolerance_slider, tolerance_value = self._create_slider_row(0, 255, mode_group)
+                tolerance_row.setVisible(False)
+
+                magic_mode_combo = QComboBox(mode_group)
                 magic_mode_combo.addItems(["Connected Region", "Global Match"])
+                magic_mode_combo.setVisible(False)
 
-                edge_protect_check = QCheckBox("Enable Edge Protect", form_widget)
+                edge_protect_check = QCheckBox("Enable Edge Protect", mode_group)
+                edge_protect_check.setVisible(False)
 
-                row_map = {
-                    "brush_size": brush_size_row,
-                    "softness": softness_row,
-                    "opacity": opacity_row,
-                    "spacing": spacing_row,
-                    "tolerance": tolerance_row,
-                    "magic_mode": magic_mode_combo,
-                    "edge_protect": edge_protect_check,
-                }
+                brush_size_label = self._create_form_label("Brush Size", mode_group)
+                softness_label = self._create_form_label("Softness", mode_group)
+                opacity_label = self._create_form_label("Opacity", mode_group)
+                spacing_label = self._create_form_label("Spacing", mode_group)
+                tolerance_label = self._create_form_label("Tolerance", mode_group)
+                magic_mode_label = self._create_form_label("Magic Mode", mode_group)
 
-                active_fields = self._editor_fields_for_tool_mode(tool_name, mode_name)
+                form.addRow(brush_size_label, brush_size_row)
+                form.addRow(softness_label, softness_row)
+                form.addRow(opacity_label, opacity_row)
+                form.addRow(spacing_label, spacing_row)
 
-                for field_name in active_fields:
-                    if field_name == "edge_protect":
-                        form.addRow("", edge_protect_check)
-                    elif field_name == "magic_mode":
-                        form.addRow(field_labels[field_name], magic_mode_combo)
-                    else:
-                        form.addRow(field_labels[field_name], row_map[field_name])
+                visibility = self._editor_field_visibility(tool_name, mode_name)
 
-                button_row_widget = QWidget()
-                button_row = QHBoxLayout(button_row_widget)
-                button_row.setContentsMargins(0, 0, 0, 0)
+                brush_size_row.setVisible(visibility["brush_size"])
+                softness_row.setVisible(visibility["softness"])
+                opacity_row.setVisible(visibility["opacity"])
+                spacing_row.setVisible(visibility["spacing"])
+
+                form.addRow(tolerance_label, tolerance_row)
+                form.addRow(magic_mode_label, magic_mode_combo)
+
+                tolerance_label.setVisible(visibility["tolerance"])
+                tolerance_row.setVisible(visibility["tolerance"])
+
+                magic_mode_label.setVisible(visibility["magic_mode"])
+                magic_mode_combo.setVisible(visibility["magic_mode"])
+
+                if visibility["edge_protect"]:
+                    edge_protect_check.setVisible(True)
+                    form.addRow("", edge_protect_check)
+
+                button_row = QHBoxLayout()
                 button_row.addStretch()
 
                 save_preset_btn = QPushButton("Save Preset")
@@ -421,29 +460,32 @@ class PreferencesDialog(QDialog):
 
                 button_row.addWidget(save_preset_btn)
                 button_row.addWidget(save_preset_as_btn)
-                form.addRow("", button_row_widget)
-
-                mode_layout.addWidget(form_widget)
+                form.addRow("", button_row)
 
                 self.tool_mode_sections[tool_name][mode_name] = {
+                    "brush_size_label": brush_size_label,
                     "brush_size_row": brush_size_row,
                     "brush_size_slider": brush_size_slider,
                     "brush_size_value": brush_size_value,
+                    "softness_label": softness_label,
                     "softness_row": softness_row,
                     "softness_slider": softness_slider,
                     "softness_value": softness_value,
+                    "opacity_label": opacity_label,
                     "opacity_row": opacity_row,
                     "opacity_slider": opacity_slider,
                     "opacity_value": opacity_value,
+                    "spacing_label": spacing_label,
                     "spacing_row": spacing_row,
                     "spacing_slider": spacing_slider,
                     "spacing_value": spacing_value,
+                    "tolerance_label": tolerance_label,
                     "tolerance_row": tolerance_row,
                     "tolerance_slider": tolerance_slider,
                     "tolerance_value": tolerance_value,
+                    "magic_mode_label": magic_mode_label,
                     "magic_mode": magic_mode_combo,
                     "edge_protect": edge_protect_check,
-                    "active_fields": active_fields,
                     "save_btn": save_preset_btn,
                     "save_as_btn": save_preset_as_btn,
                 }
@@ -455,7 +497,7 @@ class PreferencesDialog(QDialog):
                     lambda checked=False, t=tool_name, m=mode_name: self._save_mode_preset_with_dialog(t, m)
                 )
 
-                tool_layout.addWidget(mode_section)
+                tool_layout.addWidget(mode_group)
 
             self.editor_layout.addWidget(tool_group)
             self._register_search_target(
@@ -838,6 +880,19 @@ class PreferencesDialog(QDialog):
         widgets["tolerance_slider"].setValue(values.get("tolerance", 35))
         widgets["magic_mode"].setCurrentText(values.get("magic_mode", "Connected Region"))
         widgets["edge_protect"].setChecked(values.get("edge_protect", True))
+        self._update_editor_mode_section_visibility(tool_name, mode_name)
+        
+    def _update_editor_mode_section_visibility(self, tool_name: str, mode_name: str):
+        widgets = self.tool_mode_sections[tool_name][mode_name]
+        visibility = self._editor_field_visibility(tool_name, mode_name)
+
+        widgets["brush_size_row"].setVisible(visibility["brush_size"])
+        widgets["softness_row"].setVisible(visibility["softness"])
+        widgets["opacity_row"].setVisible(visibility["opacity"])
+        widgets["spacing_row"].setVisible(visibility["spacing"])
+        widgets["tolerance_row"].setVisible(visibility["tolerance"])
+        widgets["magic_mode"].setVisible(visibility["magic_mode"])
+        widgets["edge_protect"].setVisible(visibility["edge_protect"])
 
     def _apply_tool_values(self, tool_name: str, data: dict):
         for mode_name in self._mode_names():
@@ -1717,6 +1772,7 @@ class PreferencesDialog(QDialog):
                 widgets["tolerance_slider"].setValue(mode_defaults["tolerance"])
                 widgets["magic_mode"].setCurrentText(mode_defaults["magic_mode"])
                 widgets["edge_protect"].setChecked(mode_defaults["edge_protect"])
+                self._update_editor_mode_section_visibility(tool_name, mode_name)
 
         self.editor_full_preset_name_edit.setText(self._next_default_full_preset_name())
         self.editor_full_preset_notes_edit.clear()

@@ -27,14 +27,18 @@ def build_output_path(
     output_dir: Path,
     suffix: str,
     output_format: str,
+    overwrite_existing: bool = False,
 ) -> Path:
     extension = FORMAT_MAP.get(output_format.upper(), ".png")
     safe_stem = sanitize_output_stem(source_path.stem)
     base_name = f"{safe_stem}{suffix}"
 
     candidate = output_dir / f"{base_name}{extension}"
-    counter = 1
 
+    if overwrite_existing:
+        return candidate
+
+    counter = 1
     while candidate.exists():
         candidate = output_dir / f"{base_name}_{counter}{extension}"
         counter += 1
