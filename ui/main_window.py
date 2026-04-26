@@ -35,6 +35,39 @@ from processing.export_utils import create_batch_zip
 
 class MainWindow(QMainWindow):
 
+    def _on_preferences_applied(self, dialog):
+        selected_startup_preset = dialog.default_startup_preset_combo.currentData()
+        if selected_startup_preset is None:
+            current_text = dialog.default_startup_preset_combo.currentText().strip()
+            selected_startup_preset = "" if current_text == "None" else current_text
+
+        selected_startup_preset = str(selected_startup_preset).strip()
+        self.settings_store.setValue("prefs/startup_preset", selected_startup_preset)
+        self.settings_store.setValue("prefs/startup_preset_name", selected_startup_preset)
+        self.settings_store.sync()
+
+        self._ensure_builtin_starter_presets()
+        self._apply_startup_preset_to_editor_defaults()
+        self.settings_store.sync()
+
+        self._apply_general_preferences_to_ui()
+        self._sync_settings_panel_tool_defaults_from_preferences()
+
+        current_tool = self.settings_panel.tool_combo.currentText()
+        current_apply_mode = self.settings_panel.apply_mode_combo.currentText()
+        current_defaults = (
+            self.settings_panel.tool_defaults
+            .get(current_tool, {})
+            .get(current_apply_mode, {})
+        )
+        self._apply_editor_values_to_settings_panel(current_tool, current_apply_mode, current_defaults)
+        self._persist_editor_settings()
+        self._sync_preview_tool_settings()
+        self._apply_menu_shortcuts()
+        self._refresh_main_panel_tool_preset_options()
+        self._apply_watch_preferences_from_dialog(dialog)
+        self.log("Preferences applied.")
+
     def _finalize_preview_thread(self):
         if self.preview_worker_thread is not None and self.preview_worker_thread.isRunning():
             self.preview_worker_thread.quit()
@@ -83,7 +116,10 @@ class MainWindow(QMainWindow):
         self.resize(1500, 900)
         self.setMinimumSize(1080, 700)
 
-        self.settings_store = QSettings("MyBGRemover", "MyBGRemover")
+        _config_dir = Path.home() / ".config" / "MyBGRemover"
+        _config_dir.mkdir(parents=True, exist_ok=True)
+        _ini_path = _config_dir / "MyBGRemover.ini"
+        self.settings_store = QSettings(str(_ini_path), QSettings.Format.IniFormat)
 
         self.state = StateManager()
 
@@ -94,6 +130,8 @@ class MainWindow(QMainWindow):
 
         self.watch_worker_thread = None
         self.watch_worker = None
+        self._preferences_dialog = None
+        self._watch_status_text = "Watch status: Off — No folder selected"
 
         self.processing_active = False
         self.current_processing_index = None
@@ -122,6 +160,10 @@ class MainWindow(QMainWindow):
         self.edited_preview_cache_dir.mkdir(parents=True, exist_ok=True)
         self.fullres_export_cache_dir.mkdir(parents=True, exist_ok=True)
 
+        self.logs_dir = Path("logs")
+        self.logs_dir.mkdir(parents=True, exist_ok=True)
+        self.app_log_path = self.logs_dir / "app_log.txt"
+
         self.setAcceptDrops(True)
 
         central = QWidget()
@@ -131,8 +173,8 @@ class MainWindow(QMainWindow):
         outer_layout.setContentsMargins(8, 8, 8, 8)
         outer_layout.setSpacing(8)
 
-        main_vertical_splitter = QSplitter(Qt.Orientation.Vertical)
-        content_splitter = QSplitter(Qt.Orientation.Horizontal)
+        self.main_vertical_splitter = QSplitter(Qt.Orientation.Vertical)
+        self.content_splitter = QSplitter(Qt.Orientation.Horizontal)
 
         self.file_panel = FilePanel()
         self.file_panel.setMinimumWidth(360)
@@ -145,19 +187,22 @@ class MainWindow(QMainWindow):
         self.settings_scroll = QScrollArea()
         self.settings_scroll.setWidget(self.settings_panel)
         self.settings_scroll.setWidgetResizable(True)
-        self.settings_scroll.setMinimumWidth(320)
-        self.settings_scroll.setMaximumWidth(380)
+
+        self.preview_mode_action = QAction("Preview Mode", self)
         self.settings_scroll.setFrameShape(QFrame.Shape.NoFrame)
 
         self._create_menu_bar()
 
-        content_splitter.addWidget(self.file_panel)
-        content_splitter.addWidget(self.preview_canvas)
-        content_splitter.addWidget(self.settings_scroll)
-        content_splitter.setSizes([430, 780, 340])
-        content_splitter.setStretchFactor(0, 0)
-        content_splitter.setStretchFactor(1, 1)
-        content_splitter.setStretchFactor(2, 0)
+        self.content_splitter.addWidget(self.file_panel)
+        self.content_splitter.addWidget(self.preview_canvas)
+        self.content_splitter.addWidget(self.settings_scroll)
+        self.content_splitter.setSizes([430, 780, 390])
+        self.content_splitter.setStretchFactor(0, 0)
+        self.content_splitter.setStretchFactor(1, 1)
+        self.content_splitter.setStretchFactor(2, 0)
+        self.content_splitter.setCollapsible(0, False)
+        self.content_splitter.setCollapsible(1, False)
+        self.content_splitter.setCollapsible(2, False)
 
         content_container = QWidget()
         content_layout = QVBoxLayout(content_container)
@@ -169,7 +214,7 @@ class MainWindow(QMainWindow):
         self.progress_bar.setMinimumHeight(22)
         self.progress_bar.setMaximumHeight(24)
 
-        content_layout.addWidget(content_splitter, 1)
+        content_layout.addWidget(self.content_splitter, 1)
         content_layout.addWidget(self.progress_bar, 0)
 
         self.log_frame = QFrame()
@@ -191,19 +236,26 @@ class MainWindow(QMainWindow):
         log_layout.addWidget(self.log_title)
         log_layout.addWidget(self.log_panel)
 
-        main_vertical_splitter.addWidget(content_container)
-        main_vertical_splitter.addWidget(self.log_frame)
-        main_vertical_splitter.setSizes([680, 170])
-        main_vertical_splitter.setStretchFactor(0, 1)
-        main_vertical_splitter.setStretchFactor(1, 0)
+        self.main_vertical_splitter.addWidget(content_container)
+        self.main_vertical_splitter.addWidget(self.log_frame)
+        self.main_vertical_splitter.setSizes([680, 170])
+        self.main_vertical_splitter.setStretchFactor(0, 1)
+        self.main_vertical_splitter.setStretchFactor(1, 0)
+        self.main_vertical_splitter.setCollapsible(0, False)
+        self.main_vertical_splitter.setCollapsible(1, True)
 
-        outer_layout.addWidget(main_vertical_splitter, 1)
+        outer_layout.addWidget(self.main_vertical_splitter, 1)
 
         self._apply_basic_styles()
         self._connect_signals()
         self._restore_persistent_settings()
+        if hasattr(self.settings_panel, "update_mode_visibility"):
+            self.settings_panel.update_mode_visibility()
         self._update_watch_status_label(False, "")
-        self.preview_canvas.clear_preview()
+        self._restore_loaded_file_list()
+        self._restore_window_layout()
+        if not self.state.items:
+            self.preview_canvas.clear_preview()
         QTimer.singleShot(0, self._finalize_editor_restore_after_startup)
 
         self.log("MyBGRemover started.")
@@ -216,49 +268,238 @@ class MainWindow(QMainWindow):
         self.log("ZIP export is available for batch runs.")
 
     def _apply_basic_styles(self):
-        self.setStyleSheet("""
-            QWidget {
+        check_icon_path = (Path(__file__).resolve().parent / "assets" / "checkmark.svg").as_posix()
+
+        self.setStyleSheet(f"""
+            QWidget {{
                 background: #2b2b2b;
                 color: #f0f0f0;
-            }
-            QFrame#filePanel, QFrame#previewCanvas, QFrame#settingsPanel, QFrame#logFrame {
-                border: 2px solid #808080;
-                border-radius: 6px;
+            }}
+
+            QMainWindow {{
+                background: #2b2b2b;
+            }}
+
+            QFrame#filePanel,
+            QFrame#previewCanvas,
+            QFrame#settingsPanel,
+            QFrame#logFrame {{
+                border: 2px solid #707070;
+                border-radius: 8px;
                 background: #353535;
-            }
-            QLabel#panelTitle {
+            }}
+
+            QLabel#panelTitle {{
                 font-size: 16px;
                 font-weight: bold;
                 color: #ffffff;
                 padding: 2px 0 6px 0;
-            }
-            QListWidget, QTextEdit, QLineEdit, QComboBox, QScrollArea {
+            }}
+
+            QMenuBar {{
+                background: #313131;
+                color: #f0f0f0;
+                border-bottom: 1px solid #4d4d4d;
+            }}
+
+            QMenuBar::item {{
+                background: transparent;
+                padding: 6px 10px;
+                margin: 2px;
+                border-radius: 4px;
+            }}
+
+            QMenuBar::item:selected {{
+                background: #4f4f4f;
+            }}
+
+            QMenuBar::item:pressed {{
+                background: #626262;
+            }}
+
+            QMenu {{
+                background: #2a2a2a;
+                color: #f0f0f0;
+                border: 1px solid #5a5a5a;
+                padding: 4px;
+            }}
+
+            QMenu::item {{
+                padding: 6px 20px 6px 20px;
+                border-radius: 4px;
+            }}
+
+            QMenu::item:selected {{
+                background: #4f4f4f;
+            }}
+
+            QListWidget,
+            QTextEdit,
+            QLineEdit,
+            QComboBox,
+            QScrollArea,
+            QPlainTextEdit,
+            QSpinBox,
+            QKeySequenceEdit {{
                 background: #1f1f1f;
                 color: #f0f0f0;
-                border: 1px solid #666;
-            }
-            QPushButton {
+                border: 1px solid #666666;
+                border-radius: 5px;
+                padding: 4px;
+                selection-background-color: #AD2831;
+                selection-color: #ffffff;
+            }}
+
+            QListWidget:hover,
+            QTextEdit:hover,
+            QLineEdit:hover,
+            QComboBox:hover,
+            QPlainTextEdit:hover,
+            QSpinBox:hover,
+            QKeySequenceEdit:hover {{
+                border: 1px solid #8a8a8a;
+            }}
+
+            QListWidget:focus,
+            QTextEdit:focus,
+            QLineEdit:focus,
+            QComboBox:focus,
+            QPlainTextEdit:focus,
+            QSpinBox:focus,
+            QKeySequenceEdit:focus {{
+                border: 1px solid #AD2831;
+            }}
+
+            QListWidget::item {{
+                padding: 4px;
+                border-radius: 4px;
+            }}
+
+            QListWidget::item:selected {{
+                background: #AD2831;
+                color: #ffffff;
+            }}
+
+            QListWidget::item:hover {{
+                background: #444444;
+            }}
+
+            QPushButton {{
                 background: #4a4a4a;
                 color: #ffffff;
-                border: 1px solid #777;
-                padding: 6px;
-            }
-            QPushButton:hover {
-                background: #5a5a5a;
-            }
-            QPushButton:disabled {
+                border: 1px solid #777777;
+                border-radius: 6px;
+                padding: 6px 10px;
+            }}
+
+            QPushButton:hover {{
+                background: #5c5c5c;
+                border: 1px solid #9a9a9a;
+            }}
+
+            QPushButton:pressed {{
+                background: #6b6b6b;
+                border: 1px solid #b0b0b0;
+            }}
+
+            QPushButton:checked {{
+                background: #AD2831;
+                border: 1px solid #AD2831;
+            }}
+
+            QPushButton:disabled {{
                 background: #3a3a3a;
                 color: #999999;
-            }
-            QCheckBox, QLabel {
+                border: 1px solid #555555;
+            }}
+
+            QComboBox::drop-down {{
+                border: none;
+                width: 22px;
+            }}
+
+            QTabWidget::pane {{
+                border: 1px solid #5f5f5f;
+                background: #2f2f2f;
+            }}
+
+            QTabBar::tab {{
+                background: #3a3a3a;
                 color: #f0f0f0;
-            }
-            QProgressBar {
-                border: 1px solid #666;
+                border: 1px solid #5f5f5f;
+                padding: 6px 12px;
+                margin-right: 2px;
+                border-top-left-radius: 5px;
+                border-top-right-radius: 5px;
+            }}
+
+            QTabBar::tab:selected {{
+                background: #AD2831;
+                color: #ffffff;
+            }}
+
+            QTabBar::tab:hover:!selected {{
+                background: #4d4d4d;
+            }}
+
+            QCheckBox,
+            QLabel {{
+                color: #f0f0f0;
+            }}
+
+            QCheckBox::indicator {{
+                width: 18px;
+                height: 18px;
+                border: 1px solid #888888;
+                border-radius: 4px;
+                background: #1f1f1f;
+            }}
+
+            QCheckBox::indicator:hover {{
+                border: 1px solid #a5a5a5;
+            }}
+
+            QCheckBox::indicator:checked {{
+                background: #1f1f1f;
+                border: 1px solid #AD2831;
+                image: url("{check_icon_path}");
+            }}
+
+            QSlider::groove:horizontal {{
+                height: 6px;
+                background: #444444;
+                border-radius: 3px;
+            }}
+
+            QSlider::sub-page:horizontal {{
+                background: #AD2831;
+                border-radius: 3px;
+            }}
+
+            QSlider::handle:horizontal {{
+                background: #d8d8d8;
+                border: 1px solid #8a8a8a;
+                width: 14px;
+                margin: -5px 0;
+                border-radius: 7px;
+            }}
+
+            QSlider::handle:horizontal:hover {{
+                background: #f0f0f0;
+            }}
+
+            QProgressBar {{
+                border: 1px solid #666666;
+                border-radius: 5px;
                 background: #1f1f1f;
                 color: #ffffff;
                 text-align: center;
-            }
+            }}
+
+            QProgressBar::chunk {{
+                background: #AD2831;
+                border-radius: 4px;
+            }}
         """)
 
     def _create_menu_bar(self):
@@ -342,6 +583,14 @@ class MainWindow(QMainWindow):
 
         view_menu.addSeparator()
 
+        self.toggle_log_panel_action = QAction("Show Log Panel", self)
+        self.toggle_log_panel_action.setCheckable(True)
+        self.toggle_log_panel_action.setChecked(True)
+        self.toggle_log_panel_action.triggered.connect(self._toggle_log_panel)
+        view_menu.addAction(self.toggle_log_panel_action)
+
+        view_menu.addSeparator()
+
         self.preview_mode_action = QAction("Preview Mode", self)
         self.preview_mode_action.triggered.connect(self.preview_canvas.set_preview_mode)
         view_menu.addAction(self.preview_mode_action)
@@ -402,7 +651,7 @@ class MainWindow(QMainWindow):
 
     def _general_preference_default(self, key: str, fallback):
         return self.settings_store.value(
-            f"general/{key}",
+            f"prefs/{key}",
             fallback,
             type=type(fallback),
         )
@@ -418,7 +667,28 @@ class MainWindow(QMainWindow):
         return mode_name.lower().replace(" ", "_")
 
     def _apply_general_preferences_to_ui(self):
+        backend_name = self._general_preference_default("backend", "rembg")
         model_name = self._general_preference_default("model", "u2netp")
+        removal_mode = self._general_preference_default("removal_mode", "AI Removal")
+        color_removal_hex = self._general_preference_default("color_removal_hex", "#FFFFFF")
+        color_removal_threshold = self._general_preference_default("color_removal_threshold", 30)
+        color_removal_match_mode = self._general_preference_default("color_removal_match_mode", "Connected Edges")
+        color_removal_feather = self._general_preference_default("color_removal_feather", 0)
+        color_removal_reduce_spill = self._general_preference_default("color_removal_reduce_spill", True)
+
+        rembg_alpha_matting = self._general_preference_default("rembg_alpha_matting", False)
+        rembg_foreground_threshold = self._general_preference_default("rembg_foreground_threshold", 240)
+        rembg_background_threshold = self._general_preference_default("rembg_background_threshold", 10)
+        rembg_erode_size = self._general_preference_default("rembg_erode_size", 10)
+        rembg_post_process_mask = self._general_preference_default("rembg_post_process_mask", False)
+
+        inspyrenet_mode = self._general_preference_default("inspyrenet_mode", "fast")
+        inspyrenet_resize = self._general_preference_default("inspyrenet_resize", "static")
+        inspyrenet_threshold = self._general_preference_default("inspyrenet_threshold", 50)
+
+        modnet_matte_threshold = self._general_preference_default("modnet_matte_threshold", 10)
+        modnet_edge_feather = self._general_preference_default("modnet_edge_feather", 0)
+
         action_name = self._general_preference_default("action", "Process")
         target_name = self._general_preference_default("target", "Selected")
         view_mode = self._general_preference_default("view_mode", "list")
@@ -433,8 +703,79 @@ class MainWindow(QMainWindow):
         skip_processed = self._general_preference_default("skip_processed", False)
         include_subfolders = self._general_preference_default("include_subfolders", False)
 
+        if hasattr(self.settings_panel, "backend_combo"):
+            if self.settings_panel.backend_combo.findText(backend_name) >= 0:
+                self.settings_panel.backend_combo.setCurrentText(backend_name)
+
+        if hasattr(self.settings_panel, "inspyrenet_mode_combo"):
+            if self.settings_panel.inspyrenet_mode_combo.findText(inspyrenet_mode) >= 0:
+                self.settings_panel.inspyrenet_mode_combo.setCurrentText(inspyrenet_mode)
+
+        if hasattr(self.settings_panel, "inspyrenet_resize_combo"):
+            if self.settings_panel.inspyrenet_resize_combo.findText(inspyrenet_resize) >= 0:
+                self.settings_panel.inspyrenet_resize_combo.setCurrentText(inspyrenet_resize)
+
+        if hasattr(self.settings_panel, "inspyrenet_threshold_slider"):
+            self.settings_panel.inspyrenet_threshold_slider.setValue(
+                max(0, min(100, int(inspyrenet_threshold)))
+            )
+            
+        if hasattr(self.settings_panel, "rembg_alpha_matting_check"):
+            self.settings_panel.rembg_alpha_matting_check.setChecked(bool(rembg_alpha_matting))
+
+        if hasattr(self.settings_panel, "rembg_fg_slider"):
+            self.settings_panel.rembg_fg_slider.setValue(
+                max(1, min(255, int(rembg_foreground_threshold)))
+            )
+
+        if hasattr(self.settings_panel, "rembg_bg_slider"):
+            self.settings_panel.rembg_bg_slider.setValue(
+                max(0, min(255, int(rembg_background_threshold)))
+            )
+
+        if hasattr(self.settings_panel, "rembg_erode_slider"):
+            self.settings_panel.rembg_erode_slider.setValue(
+                max(0, min(50, int(rembg_erode_size)))
+            )
+
+        if hasattr(self.settings_panel, "rembg_post_process_check"):
+            self.settings_panel.rembg_post_process_check.setChecked(bool(rembg_post_process_mask))
+
+        if hasattr(self.settings_panel, "modnet_threshold_slider"):
+            self.settings_panel.modnet_threshold_slider.setValue(
+                max(0, min(100, int(modnet_matte_threshold)))
+            )
+
+        if hasattr(self.settings_panel, "modnet_feather_slider"):
+            self.settings_panel.modnet_feather_slider.setValue(
+                max(0, min(20, int(modnet_edge_feather)))
+            )
+
         if self.settings_panel.model_combo.findText(model_name) >= 0:
             self.settings_panel.model_combo.setCurrentText(model_name)
+
+        if self.settings_panel.removal_mode_combo.findText(removal_mode) >= 0:
+            self.settings_panel.removal_mode_combo.setCurrentText(removal_mode)
+
+        if hasattr(self.settings_panel, "set_selected_removal_hex"):
+            self.settings_panel.set_selected_removal_hex(color_removal_hex)
+
+        if hasattr(self.settings_panel, "threshold_slider"):
+            self.settings_panel.threshold_slider.setValue(
+                max(0, min(255, int(color_removal_threshold)))
+            )
+
+        if hasattr(self.settings_panel, "color_match_mode_combo"):
+            if self.settings_panel.color_match_mode_combo.findText(color_removal_match_mode) >= 0:
+                self.settings_panel.color_match_mode_combo.setCurrentText(color_removal_match_mode)
+
+        if hasattr(self.settings_panel, "color_feather_slider"):
+            self.settings_panel.color_feather_slider.setValue(
+                max(0, min(20, int(color_removal_feather)))
+            )
+
+        if hasattr(self.settings_panel, "color_spill_cleanup_check"):
+            self.settings_panel.color_spill_cleanup_check.setChecked(bool(color_removal_reduce_spill))
 
         if self.settings_panel.action_combo.findText(action_name) >= 0:
             self.settings_panel.action_combo.setCurrentText(action_name)
@@ -473,10 +814,50 @@ class MainWindow(QMainWindow):
             del blocker
 
         self.settings_panel.update_background_visibility()
-        self.settings_panel.update_model_hint()
+
+        if hasattr(self.settings_panel, "update_backend_visibility"):
+            self.settings_panel.update_backend_visibility()
+        else:
+            self.settings_panel.update_model_hint()
+
         self.rebuild_file_panel()
         self._refresh_main_panel_tool_preset_options()
+        self._update_backend_recommendation_note()
+        
+    def _toggle_log_panel(self, checked: bool):
+        if not hasattr(self, "log_frame"):
+            return
 
+        self.log_frame.setVisible(checked)
+        self.settings_store.setValue("layout/log_panel_visible", bool(checked))
+
+        if checked and hasattr(self, "main_vertical_splitter"):
+            current_sizes = self.main_vertical_splitter.sizes()
+            if len(current_sizes) >= 2 and current_sizes[1] < 80:
+                self.main_vertical_splitter.setSizes([700, 170])
+                
+    def _restore_window_layout(self):
+        geometry = self.settings_store.value("layout/window_geometry")
+        if geometry:
+            self.restoreGeometry(geometry)
+
+        main_splitter_state = self.settings_store.value("layout/main_vertical_splitter")
+        if main_splitter_state and hasattr(self, "main_vertical_splitter"):
+            self.main_vertical_splitter.restoreState(main_splitter_state)
+
+        content_splitter_state = self.settings_store.value("layout/content_splitter")
+        if content_splitter_state and hasattr(self, "content_splitter"):
+            self.content_splitter.restoreState(content_splitter_state)
+
+        log_visible = self.settings_store.value("layout/log_panel_visible", True, type=bool)
+        if hasattr(self, "log_frame"):
+            self.log_frame.setVisible(log_visible)
+
+        if hasattr(self, "toggle_log_panel_action"):
+            self.toggle_log_panel_action.blockSignals(True)
+            self.toggle_log_panel_action.setChecked(log_visible)
+            self.toggle_log_panel_action.blockSignals(False)
+        
     def _apply_menu_shortcuts(self):
         if hasattr(self, "open_files_action"):
             self.open_files_action.setShortcut(QKeySequence(self._shortcut_preference_default("open_files", "Ctrl+O")))
@@ -536,7 +917,90 @@ class MainWindow(QMainWindow):
         self._add_recent_entry("folders", folder_path)
         self._rebuild_recent_menu()
         self._load_paths_into_app([folder_path])
+        
+    def load_watch_folder_into_app(self):
+        watch_folder_path = self._watch_folder_path_from_settings()
 
+        if not watch_folder_path:
+            QMessageBox.information(
+                self,
+                "No Watch Folder",
+                "Choose a watch folder first in Preferences > General.",
+            )
+            return
+
+        folder = Path(watch_folder_path).expanduser()
+        if not folder.exists() or not folder.is_dir():
+            QMessageBox.warning(
+                self,
+                "Invalid Watch Folder",
+                f"The saved watch folder is not valid:\n\n{folder}",
+            )
+            return
+
+        self._load_paths_into_app([str(folder)])
+        self.log(f"Loaded watch folder: {folder}")
+        
+    def _watch_enabled_from_settings(self) -> bool:
+        return self.settings_store.value("watch/enabled", False, type=bool)
+        
+    def _watch_folder_path_from_settings(self) -> str:
+        return str(self.settings_store.value("watch/path", "", type=str)).strip()
+
+    def _watch_include_subfolders_from_settings(self) -> bool:
+        return self.settings_store.value("watch/include_subfolders", False, type=bool)
+
+    def _sync_watch_controls_to_preferences_dialog(self, dialog):
+        if dialog is None:
+            return
+
+        folder_path = self._watch_folder_path_from_settings()
+        include_subfolders = self._watch_include_subfolders_from_settings()
+
+        dialog.watch_folder_edit.setText(folder_path)
+        dialog.watch_include_subfolders_check.setChecked(include_subfolders)
+
+        dialog.watch_enable_check.blockSignals(True)
+        dialog.watch_enable_check.setChecked(self.watch_worker is not None)
+        dialog.watch_enable_check.blockSignals(False)
+
+        if self.watch_worker is not None:
+            dialog.watch_status_label.setText(self._watch_status_text)
+            return
+
+        if not folder_path:
+            dialog.watch_status_label.setText("Watch status: Off — No folder selected")
+            return
+
+        folder = Path(folder_path).expanduser()
+        if folder.exists() and folder.is_dir():
+            dialog.watch_status_label.setText(f"Watch status: Off — Ready ({folder})")
+        else:
+            dialog.watch_status_label.setText(f"Watch status: Off — Folder not found ({folder_path})")
+
+    def _apply_watch_preferences_from_dialog(self, dialog):
+        if dialog is None:
+            return
+
+        folder_path = dialog.watch_folder_edit.text().strip()
+        include_subfolders = dialog.watch_include_subfolders_check.isChecked()
+
+        self.settings_store.setValue("watch/path", folder_path)
+        self.settings_store.setValue("watch/include_subfolders", include_subfolders)
+        self.settings_store.setValue("watch/enabled", dialog.watch_enable_check.isChecked())
+        self.settings_store.sync()
+
+        if dialog.watch_enable_check.isChecked():
+            self._start_watch_folder()
+        else:
+            self._stop_watch_folder()
+
+        self._sync_watch_controls_to_preferences_dialog(dialog)
+
+    def _persist_watch_enabled(self, enabled: bool):
+        self.settings_store.setValue("watch/enabled", enabled)
+        self.settings_store.sync()
+        
     def _load_paths_into_app(self, incoming_paths):
         include_subfolders = False
         if hasattr(self.file_panel, "include_subfolders_check"):
@@ -654,6 +1118,136 @@ class MainWindow(QMainWindow):
         self._rebuild_recent_menu()
         self.log("Cleared recent files and folders.")
 
+    def _normalized_source_path(self, path_value) -> str:
+        if not path_value:
+            return ""
+
+        try:
+            return str(Path(path_value).expanduser().resolve())
+        except Exception:
+            return str(Path(path_value).expanduser())
+
+    def _persist_loaded_file_list(self):
+        loaded_paths = []
+        checked_paths = []
+        selected_path = ""
+
+        for item in self.state.items:
+            normalized_path = self._normalized_source_path(getattr(item, "source_path", None))
+            if normalized_path:
+                loaded_paths.append(normalized_path)
+
+        if hasattr(self.file_panel, "get_checked_user_indices"):
+            checked_indices = set(self.file_panel.get_checked_user_indices())
+        else:
+            checked_indices = set()
+
+        for index in checked_indices:
+            item = self.state.get_item(index)
+            if item is None:
+                continue
+
+            normalized_path = self._normalized_source_path(getattr(item, "source_path", None))
+            if normalized_path:
+                checked_paths.append(normalized_path)
+
+        if self.state.selected_index is not None:
+            selected_item = self.state.get_item(self.state.selected_index)
+            if selected_item is not None:
+                selected_path = self._normalized_source_path(getattr(selected_item, "source_path", None))
+
+        self.settings_store.setValue("session/loaded_file_paths", loaded_paths)
+        self.settings_store.setValue("session/checked_file_paths", checked_paths)
+        self.settings_store.setValue("session/selected_file_path", selected_path)
+
+    def _restore_checked_items_from_paths(self, saved_checked_paths: list[str]):
+        if not hasattr(self.file_panel, "file_view"):
+            return
+
+        normalized_checked = {
+            self._normalized_source_path(path_text)
+            for path_text in saved_checked_paths
+            if str(path_text).strip()
+        }
+
+        if not normalized_checked:
+            return
+
+        self.file_panel.file_view.blockSignals(True)
+
+        for row in range(self.file_panel.file_view.count()):
+            item_widget = self.file_panel.file_view.item(row)
+            if item_widget is None:
+                continue
+
+            item_index = item_widget.data(Qt.ItemDataRole.UserRole)
+            if item_index is None:
+                continue
+
+            state_item = self.state.get_item(item_index)
+            if state_item is None:
+                continue
+
+            item_path = self._normalized_source_path(getattr(state_item, "source_path", None))
+            item_widget.setCheckState(
+                Qt.CheckState.Checked
+                if item_path in normalized_checked
+                else Qt.CheckState.Unchecked
+            )
+
+        self.file_panel.file_view.blockSignals(False)
+
+        if hasattr(self.file_panel, "_sync_master_checkbox"):
+            self.file_panel._sync_master_checkbox()
+        if hasattr(self.file_panel, "_update_counts"):
+            self.file_panel._update_counts()
+
+    def _restore_selected_item_from_path(self, saved_selected_path: str):
+        normalized_selected_path = self._normalized_source_path(saved_selected_path)
+        if not normalized_selected_path:
+            return
+
+        for index, item in enumerate(self.state.items):
+            item_path = self._normalized_source_path(getattr(item, "source_path", None))
+            if item_path == normalized_selected_path:
+                self.select_item(index)
+                return
+
+    def _restore_loaded_file_list(self):
+        saved_paths = self.settings_store.value("session/loaded_file_paths", [], type=list) or []
+        saved_checked_paths = self.settings_store.value("session/checked_file_paths", [], type=list) or []
+        saved_selected_path = self.settings_store.value("session/selected_file_path", "", type=str)
+
+        existing_paths = []
+        missing_paths = []
+
+        for path_text in saved_paths:
+            if not str(path_text).strip():
+                continue
+
+            source_path = Path(str(path_text)).expanduser()
+
+            if source_path.exists() and source_path.is_file():
+                existing_paths.append(self._normalized_source_path(source_path))
+            else:
+                missing_paths.append(str(source_path))
+
+        if not existing_paths:
+            self.settings_store.setValue("session/loaded_file_paths", [])
+            self.settings_store.setValue("session/checked_file_paths", [])
+            self.settings_store.setValue("session/selected_file_path", "")
+            return
+
+        self._load_paths_into_app(existing_paths)
+        self._restore_checked_items_from_paths(saved_checked_paths)
+        self._restore_selected_item_from_path(saved_selected_path)
+        self._persist_loaded_file_list()
+
+        self.log(f"Restored {len(existing_paths)} item(s) from the previous session.")
+
+        if missing_paths:
+            self.log(f"Skipped {len(missing_paths)} missing file(s) from the previous session.")
+
     def _check_all_visible_items(self):
         if not hasattr(self.file_panel, "file_view"):
             return
@@ -711,20 +1305,30 @@ class MainWindow(QMainWindow):
                     "brush_size": 42,
                     "softness": 35,
                     "opacity": 100,
+                    "flow": 100,
                     "spacing": 1,
                     "tolerance": 35,
                     "magic_mode": "Connected Region",
                     "edge_protect": True,
+                    "smart_feather": 0,
+                    "smart_expand": 1,
+                    "smart_cleanup_holes": True,
+                    "smart_cleanup_speckles": True,
                 },
                 "Smart Selection": {
                     "apply_mode": "Smart Selection",
                     "brush_size": 42,
                     "softness": 35,
                     "opacity": 100,
+                    "flow": 100,
                     "spacing": 1,
                     "tolerance": 35,
                     "magic_mode": "Connected Region",
                     "edge_protect": True,
+                    "smart_feather": 0,
+                    "smart_expand": 1,
+                    "smart_cleanup_holes": True,
+                    "smart_cleanup_speckles": True,
                 },
             },
             "Restore": {
@@ -733,20 +1337,30 @@ class MainWindow(QMainWindow):
                     "brush_size": 42,
                     "softness": 45,
                     "opacity": 100,
+                    "flow": 100,
                     "spacing": 1,
                     "tolerance": 35,
                     "magic_mode": "Connected Region",
                     "edge_protect": True,
+                    "smart_feather": 0,
+                    "smart_expand": 1,
+                    "smart_cleanup_holes": True,
+                    "smart_cleanup_speckles": True,
                 },
                 "Smart Selection": {
                     "apply_mode": "Smart Selection",
                     "brush_size": 42,
                     "softness": 45,
                     "opacity": 100,
+                    "flow": 100,
                     "spacing": 1,
                     "tolerance": 35,
                     "magic_mode": "Connected Region",
                     "edge_protect": True,
+                    "smart_feather": 0,
+                    "smart_expand": 1,
+                    "smart_cleanup_holes": True,
+                    "smart_cleanup_speckles": True,
                 },
             },
             "Magic Erase": {
@@ -755,20 +1369,30 @@ class MainWindow(QMainWindow):
                     "brush_size": 36,
                     "softness": 55,
                     "opacity": 100,
+                    "flow": 100,
                     "spacing": 1,
                     "tolerance": 24,
                     "magic_mode": "Connected Region",
                     "edge_protect": True,
+                    "smart_feather": 0,
+                    "smart_expand": 1,
+                    "smart_cleanup_holes": True,
+                    "smart_cleanup_speckles": True,
                 },
                 "Smart Selection": {
                     "apply_mode": "Smart Selection",
                     "brush_size": 36,
                     "softness": 55,
                     "opacity": 100,
+                    "flow": 100,
                     "spacing": 1,
                     "tolerance": 24,
                     "magic_mode": "Connected Region",
                     "edge_protect": True,
+                    "smart_feather": 0,
+                    "smart_expand": 1,
+                    "smart_cleanup_holes": True,
+                    "smart_cleanup_speckles": True,
                 },
             },
             "Background Erase": {
@@ -777,20 +1401,30 @@ class MainWindow(QMainWindow):
                     "brush_size": 36,
                     "softness": 55,
                     "opacity": 100,
+                    "flow": 100,
                     "spacing": 1,
                     "tolerance": 20,
                     "magic_mode": "Connected Region",
                     "edge_protect": True,
+                    "smart_feather": 0,
+                    "smart_expand": 1,
+                    "smart_cleanup_holes": True,
+                    "smart_cleanup_speckles": True,
                 },
                 "Smart Selection": {
                     "apply_mode": "Smart Selection",
                     "brush_size": 36,
                     "softness": 55,
                     "opacity": 100,
+                    "flow": 100,
                     "spacing": 1,
                     "tolerance": 20,
                     "magic_mode": "Connected Region",
                     "edge_protect": True,
+                    "smart_feather": 0,
+                    "smart_expand": 1,
+                    "smart_cleanup_holes": True,
+                    "smart_cleanup_speckles": True,
                 },
             },
         }
@@ -809,10 +1443,15 @@ class MainWindow(QMainWindow):
                     "brush_size": self._editor_preference_default(tool_name, apply_mode, "brush_size", defaults["brush_size"]),
                     "softness": self._editor_preference_default(tool_name, apply_mode, "softness", defaults["softness"]),
                     "opacity": self._editor_preference_default(tool_name, apply_mode, "opacity", defaults["opacity"]),
+                    "flow": self._editor_preference_default(tool_name, apply_mode, "flow", defaults.get("flow", 100)),
                     "spacing": self._editor_preference_default(tool_name, apply_mode, "spacing", defaults["spacing"]),
                     "tolerance": self._editor_preference_default(tool_name, apply_mode, "tolerance", defaults["tolerance"]),
                     "magic_mode": self._editor_preference_default(tool_name, apply_mode, "magic_mode", defaults["magic_mode"]),
                     "edge_protect": self._editor_preference_default(tool_name, apply_mode, "edge_protect", defaults["edge_protect"]),
+                    "smart_feather": self._editor_preference_default(tool_name, apply_mode, "smart_feather", defaults.get("smart_feather", 0)),
+                    "smart_expand": self._editor_preference_default(tool_name, apply_mode, "smart_expand", defaults.get("smart_expand", 1)),
+                    "smart_cleanup_holes": self._editor_preference_default(tool_name, apply_mode, "smart_cleanup_holes", defaults.get("smart_cleanup_holes", True)),
+                    "smart_cleanup_speckles": self._editor_preference_default(tool_name, apply_mode, "smart_cleanup_speckles", defaults.get("smart_cleanup_speckles", True)),
                 }
 
         self.settings_panel.tool_defaults = updated_defaults
@@ -870,10 +1509,15 @@ class MainWindow(QMainWindow):
                 "brush_size": 36,
                 "softness": 55,
                 "opacity": 100,
+                "flow": 100,
                 "spacing": 1,
                 "tolerance": 14,
                 "magic_mode": "Connected Region",
                 "edge_protect": True,
+                "smart_feather": 0,
+                "smart_expand": 1,
+                "smart_cleanup_holes": True,
+                "smart_cleanup_speckles": True,
             },
         )
 
@@ -886,10 +1530,15 @@ class MainWindow(QMainWindow):
                 "brush_size": 36,
                 "softness": 55,
                 "opacity": 100,
+                "flow": 100,
                 "spacing": 1,
                 "tolerance": 38,
                 "magic_mode": "Global Match",
                 "edge_protect": False,
+                "smart_feather": 0,
+                "smart_expand": 1,
+                "smart_cleanup_holes": True,
+                "smart_cleanup_speckles": True,
             },
         )
 
@@ -902,10 +1551,15 @@ class MainWindow(QMainWindow):
                 "brush_size": 36,
                 "softness": 55,
                 "opacity": 100,
+                "flow": 100,
                 "spacing": 1,
                 "tolerance": 12,
                 "magic_mode": "Connected Region",
                 "edge_protect": True,
+                "smart_feather": 0,
+                "smart_expand": 1,
+                "smart_cleanup_holes": True,
+                "smart_cleanup_speckles": True,
             },
         )
 
@@ -918,10 +1572,15 @@ class MainWindow(QMainWindow):
                 "brush_size": 48,
                 "softness": 65,
                 "opacity": 100,
+                "flow": 100,
                 "spacing": 2,
                 "tolerance": 35,
                 "magic_mode": "Connected Region",
                 "edge_protect": True,
+                "smart_feather": 0,
+                "smart_expand": 1,
+                "smart_cleanup_holes": True,
+                "smart_cleanup_speckles": True,
             },
         )
 
@@ -934,10 +1593,15 @@ class MainWindow(QMainWindow):
                 "brush_size": 20,
                 "softness": 55,
                 "opacity": 70,
+                "flow": 100,
                 "spacing": 2,
                 "tolerance": 35,
                 "magic_mode": "Connected Region",
                 "edge_protect": True,
+                "smart_feather": 0,
+                "smart_expand": 1,
+                "smart_cleanup_holes": True,
+                "smart_cleanup_speckles": True,
             },
         )
 
@@ -953,6 +1617,7 @@ class MainWindow(QMainWindow):
                     "brush_size": 30,
                     "softness": 55,
                     "opacity": 90,
+                    "flow": 100,
                     "spacing": 2,
                     "tolerance": 35,
                     "magic_mode": "Connected Region",
@@ -965,6 +1630,7 @@ class MainWindow(QMainWindow):
                     "brush_size": 18,
                     "softness": 60,
                     "opacity": 75,
+                    "flow": 100,
                     "spacing": 2,
                     "tolerance": 35,
                     "magic_mode": "Connected Region",
@@ -978,10 +1644,15 @@ class MainWindow(QMainWindow):
                     "brush_size": 36,
                     "softness": 55,
                     "opacity": 100,
+                    "flow": 100,
                     "spacing": 1,
                     "tolerance": 16,
                     "magic_mode": "Connected Region",
                     "edge_protect": True,
+                    "smart_feather": 0,
+                    "smart_expand": 1,
+                    "smart_cleanup_holes": True,
+                    "smart_cleanup_speckles": True,
                 },
             },
             "Background Erase": {
@@ -990,10 +1661,15 @@ class MainWindow(QMainWindow):
                     "brush_size": 36,
                     "softness": 55,
                     "opacity": 100,
+                    "flow": 100,
                     "spacing": 1,
                     "tolerance": 14,
                     "magic_mode": "Connected Region",
                     "edge_protect": True,
+                    "smart_feather": 0,
+                    "smart_expand": 1,
+                    "smart_cleanup_holes": True,
+                    "smart_cleanup_speckles": True,
                 },
             },
         }
@@ -1010,22 +1686,69 @@ class MainWindow(QMainWindow):
 
     def _open_preferences_dialog(self):
         dialog = PreferencesDialog(self.settings_store, self)
+        self._preferences_dialog = dialog
+
+        saved_startup_preset = self._startup_preset_name()
+        if saved_startup_preset:
+            combo_index = dialog.default_startup_preset_combo.findData(saved_startup_preset)
+            if combo_index < 0:
+                combo_index = dialog.default_startup_preset_combo.findText(saved_startup_preset)
+            if combo_index >= 0:
+                dialog.default_startup_preset_combo.setCurrentIndex(combo_index)
+
+        self._sync_watch_controls_to_preferences_dialog(dialog)
+
         result = dialog.exec()
 
         if result:
+            selected_startup_preset = dialog.default_startup_preset_combo.currentData()
+            print(f"DEBUG SAVE: currentData={repr(selected_startup_preset)}, currentText={repr(dialog.default_startup_preset_combo.currentText())}, currentIndex={dialog.default_startup_preset_combo.currentIndex()}")
+            if selected_startup_preset is None:
+                selected_text = dialog.default_startup_preset_combo.currentText().strip()
+                selected_startup_preset = "" if selected_text == "None" else selected_text
+
+            selected_startup_preset = str(selected_startup_preset).strip()
+
+            self.settings_store.setValue("prefs/startup_preset", selected_startup_preset)
+            self.settings_store.setValue("prefs/startup_preset_name", selected_startup_preset)
+            self.settings_store.sync()
+
             self._ensure_builtin_starter_presets()
             self._apply_startup_preset_to_editor_defaults()
+            self.settings_store.sync()
+
             self._apply_general_preferences_to_ui()
             self._sync_settings_panel_tool_defaults_from_preferences()
 
+            current_tool = self.settings_panel.tool_combo.currentText()
+            current_apply_mode = self.settings_panel.apply_mode_combo.currentText()
+
+            current_defaults = (
+                self.settings_panel.tool_defaults
+                .get(current_tool, {})
+                .get(current_apply_mode, {})
+            )
+            self._apply_editor_values_to_settings_panel(
+                current_tool,
+                current_apply_mode,
+                current_defaults,
+            )
+
+            self._persist_editor_settings()
+            self._sync_preview_tool_settings()
             self._apply_menu_shortcuts()
             self._rebuild_recent_menu()
             self._refresh_main_panel_tool_preset_options()
-
-            QTimer.singleShot(0, self._finalize_editor_restore_after_startup)
+            self._apply_watch_preferences_from_dialog(dialog)
 
             self.log("Preferences updated.")
-            self.log("General settings, startup preset, editor defaults, shortcuts, file panel defaults, per-mode live editor state, and tool preset lists were reloaded from Preferences.")
+            self.log(
+                "General settings, startup preset, editor defaults, shortcuts, "
+                "file panel defaults, per-mode live editor state, and tool preset lists "
+                "were reloaded from Preferences."
+            )
+
+        self._preferences_dialog = None
 
     def _connect_signals(self):
         self.file_panel.item_selected.connect(self.select_item_from_panel)
@@ -1040,10 +1763,50 @@ class MainWindow(QMainWindow):
         self.file_panel.clear_completed_btn.clicked.connect(self.clear_completed_items)
         self.file_panel.retry_failed_btn.clicked.connect(self.retry_failed_items)
         self.file_panel.clear_all_btn.clicked.connect(self.clear_all_items)
-        self.file_panel.open_output_btn.clicked.connect(self.open_output_folder)
+        self.file_panel.load_watch_folder_btn.clicked.connect(self.load_watch_folder_into_app)
 
+        self.settings_panel.removal_mode_combo.currentTextChanged.connect(self._persist_removal_mode)
+        self.settings_panel.removal_mode_combo.currentTextChanged.connect(self._update_suffix_preview_label)
+        self.settings_panel.removal_mode_combo.currentTextChanged.connect(self._update_export_filename_preview_label)
+        self.settings_panel.threshold_slider.valueChanged.connect(self._persist_color_removal_threshold)
+        self.settings_panel.color_hex_edit.editingFinished.connect(self._persist_color_removal_hex)
+        self.settings_panel.pick_color_btn.clicked.connect(self._persist_color_removal_hex)
+
+        if hasattr(self.settings_panel, "preview_color_pick_requested"):
+            self.settings_panel.preview_color_pick_requested.connect(self._begin_preview_color_pick)
+        if hasattr(self.preview_canvas, "color_sampled"):
+            self.preview_canvas.color_sampled.connect(self._on_preview_color_sampled)
+        if hasattr(self.settings_panel, "color_match_mode_combo"):
+            self.settings_panel.color_match_mode_combo.currentTextChanged.connect(self._persist_color_removal_match_mode)
+        if hasattr(self.settings_panel, "color_feather_slider"):
+            self.settings_panel.color_feather_slider.valueChanged.connect(self._persist_color_removal_feather)
+        if hasattr(self.settings_panel, "color_spill_cleanup_check"):
+            self.settings_panel.color_spill_cleanup_check.toggled.connect(self._persist_color_removal_reduce_spill)
+        for color_widget_name in (
+            "color_r_spin", "color_g_spin", "color_b_spin",
+            "color_c_spin", "color_m_spin", "color_y_spin", "color_k_spin",
+        ):
+            color_widget = getattr(self.settings_panel, color_widget_name, None)
+            if color_widget is not None:
+                color_widget.valueChanged.connect(self._persist_color_removal_hex)
+
+        self.settings_panel.backend_combo.currentTextChanged.connect(self._persist_backend_selection)
+        self.settings_panel.backend_combo.currentTextChanged.connect(self._update_suffix_preview_label)
+        self.settings_panel.backend_combo.currentTextChanged.connect(self._update_export_filename_preview_label)
+       
+        if hasattr(self.settings_panel, "color_pick_from_preview_requested"):
+            self.settings_panel.color_pick_from_preview_requested.connect(self.preview_canvas.begin_color_pick_mode)
         self.settings_panel.run_action_btn.clicked.connect(self.run_selected_action)
         self.settings_panel.cancel_btn.clicked.connect(self.request_cancel)
+
+        self.settings_panel.include_model_suffix_check.toggled.connect(self._persist_include_model_suffix)
+        self.settings_panel.include_model_suffix_check.toggled.connect(self._update_suffix_preview_label)
+        self.settings_panel.model_combo.currentTextChanged.connect(self._update_suffix_preview_label)
+        self.settings_panel.naming_edit.textChanged.connect(self._update_suffix_preview_label)
+        self.settings_panel.output_format_combo.currentTextChanged.connect(self._update_export_filename_preview_label)
+        self.settings_panel.include_model_suffix_check.toggled.connect(self._update_export_filename_preview_label)
+        self.settings_panel.model_combo.currentTextChanged.connect(self._update_export_filename_preview_label)
+        self.settings_panel.naming_edit.textChanged.connect(self._update_export_filename_preview_label)
 
         self.settings_panel.tool_mode_about_to_change.connect(self._persist_specific_editor_state)
         self.settings_panel.tool_preset_apply_requested.connect(self._apply_tool_preset_from_main_panel)
@@ -1054,30 +1817,82 @@ class MainWindow(QMainWindow):
         self.settings_panel.brush_size_slider.valueChanged.connect(self._sync_preview_tool_settings)
         self.settings_panel.softness_slider.valueChanged.connect(self._sync_preview_tool_settings)
         self.settings_panel.opacity_slider.valueChanged.connect(self._sync_preview_tool_settings)
+        self.settings_panel.flow_slider.valueChanged.connect(self._sync_preview_tool_settings)
         self.settings_panel.spacing_slider.valueChanged.connect(self._sync_preview_tool_settings)
         self.settings_panel.tolerance_slider.valueChanged.connect(self._sync_preview_tool_settings)
         self.settings_panel.magic_mode_combo.currentTextChanged.connect(self._sync_preview_tool_settings)
         self.settings_panel.edge_protect_check.toggled.connect(self._sync_preview_tool_settings)
 
+        self.settings_panel.smart_feather_slider.valueChanged.connect(self._update_canvas_smart_settings)
+        self.settings_panel.smart_expand_slider.valueChanged.connect(self._update_canvas_smart_settings)
+        self.settings_panel.smart_cleanup_holes_checkbox.toggled.connect(self._update_canvas_smart_settings)
+        self.settings_panel.smart_cleanup_speckles_checkbox.toggled.connect(self._update_canvas_smart_settings)
+        
+        self.settings_panel.smart_feather_slider.valueChanged.connect(self._persist_editor_settings)
+        self.settings_panel.smart_expand_slider.valueChanged.connect(self._persist_editor_settings)
+        self.settings_panel.smart_cleanup_holes_checkbox.toggled.connect(self._persist_editor_settings)
+        self.settings_panel.smart_cleanup_speckles_checkbox.toggled.connect(self._persist_editor_settings)
+
+        self.settings_panel.cleanup_fill_holes_btn.clicked.connect(
+            lambda: self._run_preview_cleanup_action("fill_holes")
+        )
+        self.settings_panel.cleanup_remove_speckles_btn.clicked.connect(
+            lambda: self._run_preview_cleanup_action("remove_speckles")
+        )
+        self.settings_panel.cleanup_decontaminate_edges_btn.clicked.connect(
+            lambda: self._run_preview_cleanup_action("decontaminate_edges")
+        )
+        self.settings_panel.cleanup_refine_alpha_btn.clicked.connect(
+            lambda: self._run_preview_cleanup_action("refine_alpha")
+        )
+        self.settings_panel.cleanup_restore_alpha_btn.clicked.connect(
+            lambda: self._run_preview_cleanup_action("restore_alpha")
+        )
+
+        self.settings_panel.cleanup_blend_edges_btn.clicked.connect(
+            lambda: self._run_preview_cleanup_action("blend_edges")
+        )
         self.settings_panel.tool_combo.currentTextChanged.connect(self._persist_editor_settings)
         self.settings_panel.apply_mode_combo.currentTextChanged.connect(self._persist_editor_settings)
         self.settings_panel.brush_size_slider.valueChanged.connect(self._persist_editor_settings)
         self.settings_panel.softness_slider.valueChanged.connect(self._persist_editor_settings)
         self.settings_panel.opacity_slider.valueChanged.connect(self._persist_editor_settings)
+        self.settings_panel.flow_slider.valueChanged.connect(self._persist_editor_settings)
         self.settings_panel.spacing_slider.valueChanged.connect(self._persist_editor_settings)
         self.settings_panel.tolerance_slider.valueChanged.connect(self._persist_editor_settings)
         self.settings_panel.magic_mode_combo.currentTextChanged.connect(self._persist_editor_settings)
         self.settings_panel.edge_protect_check.toggled.connect(self._persist_editor_settings)
 
-        self.settings_panel.watch_enable_check.toggled.connect(self._on_watch_enable_toggled)
         self.settings_panel.output_dir_edit.textChanged.connect(self._persist_output_dir)
         self.settings_panel.naming_edit.textChanged.connect(self._persist_naming_suffix)
 
+        if hasattr(self.preview_canvas, "color_picked") and hasattr(self.settings_panel, "set_selected_removal_color"):
+            self.preview_canvas.color_picked.connect(self.settings_panel.set_selected_removal_color)
         self.preview_canvas.image_edited.connect(self._on_preview_image_edited)
         self.preview_canvas.edits_reset.connect(self._on_preview_edits_reset)
+        
+        self.settings_panel.inspyrenet_mode_combo.currentTextChanged.connect(self._persist_inspyrenet_mode)
+        self.settings_panel.inspyrenet_resize_combo.currentTextChanged.connect(self._persist_inspyrenet_resize)
+        self.settings_panel.inspyrenet_threshold_slider.valueChanged.connect(self._persist_inspyrenet_threshold)
 
+        self.settings_panel.rembg_alpha_matting_check.toggled.connect(self._persist_rembg_alpha_matting)
+        self.settings_panel.rembg_fg_slider.valueChanged.connect(self._persist_rembg_foreground_threshold)
+        self.settings_panel.rembg_bg_slider.valueChanged.connect(self._persist_rembg_background_threshold)
+        self.settings_panel.rembg_erode_slider.valueChanged.connect(self._persist_rembg_erode_size)
+        self.settings_panel.rembg_post_process_check.toggled.connect(self._persist_rembg_post_process_mask)
+        
+        self.settings_panel.modnet_threshold_slider.valueChanged.connect(self._persist_modnet_matte_threshold)
+        self.settings_panel.modnet_feather_slider.valueChanged.connect(self._persist_modnet_edge_feather)
+        
     def _startup_preset_name(self) -> str:
-        return self.settings_store.value("general/startup_preset", "", type=str).strip()
+        preset_name = self.settings_store.value("prefs/startup_preset_name", "", type=str)
+        preset_name = str(preset_name).strip()
+
+        if not preset_name:
+            preset_name = self.settings_store.value("prefs/startup_preset", "", type=str)
+            preset_name = str(preset_name).strip()
+
+        return preset_name
 
     def _apply_startup_preset_to_editor_defaults(self):
         preset_name = self._startup_preset_name()
@@ -1090,7 +1905,20 @@ class MainWindow(QMainWindow):
 
         tool_names = ["Erase", "Restore", "Magic Erase", "Background Erase"]
         mode_names = ["Brush", "Smart Selection"]
-        value_keys = ["brush_size", "softness", "opacity", "spacing", "tolerance", "magic_mode", "edge_protect"]
+        value_keys = [
+            "brush_size",
+            "softness",
+            "opacity",
+            "flow",
+            "spacing",
+            "tolerance",
+            "magic_mode",
+            "edge_protect",
+            "smart_feather",
+            "smart_expand",
+            "smart_cleanup_holes",
+            "smart_cleanup_speckles",
+        ]
 
         for tool_name in tool_names:
             tool_key = tool_name.lower().replace(" ", "_")
@@ -1119,20 +1947,48 @@ class MainWindow(QMainWindow):
 
         output_dir = self.settings_store.value("output_dir", "", type=str)
         naming_suffix = self.settings_store.value("naming_suffix", "_nobg", type=str)
+        include_model_suffix = self.settings_store.value("suffix/include_model_name", True, type=bool)
 
         if output_dir:
             self.settings_panel.output_dir_edit.setText(output_dir)
         if naming_suffix:
             self.settings_panel.naming_edit.setText(naming_suffix)
 
+        self.settings_panel.include_model_suffix_check.setChecked(include_model_suffix)
+
         self._apply_startup_preset_to_editor_defaults()
         self._apply_general_preferences_to_ui()
         self._sync_settings_panel_tool_defaults_from_preferences()
+
+        if self._startup_preset_name():
+            current_tool = self.settings_panel.tool_combo.currentText()
+            current_apply_mode = self.settings_panel.apply_mode_combo.currentText()
+            self.settings_panel._apply_defaults_for_tool_and_mode(current_tool, current_apply_mode)
+            self.settings_panel.update_tool_visibility()
+        else:
+            self._restore_editor_settings()
+
+        self.settings_panel._apply_defaults_for_tool_and_mode(
+            self.settings_panel.tool_combo.currentText(),
+            self.settings_panel.apply_mode_combo.currentText(),
+        )
+        self.settings_panel.update_tool_visibility()
+
+        self._update_suffix_preview_label()
+        self._update_export_filename_preview_label()
         self._apply_menu_shortcuts()
         self._refresh_main_panel_tool_preset_options()
+        saved_watch_enabled = self._watch_enabled_from_settings()
+        saved_watch_folder = self._watch_folder_path_from_settings()
 
-
-
+        if saved_watch_enabled and saved_watch_folder:
+            folder = Path(saved_watch_folder).expanduser()
+            if folder.exists() and folder.is_dir():
+                self._start_watch_folder()
+            else:
+                self._persist_watch_enabled(False)
+                self._update_watch_status_label(False, saved_watch_folder, "Folder not found")
+                
     def _restore_editor_settings(self):
         tool_name = self.settings_store.value("editor/tool_name", "Erase", type=str)
         apply_mode = self.settings_store.value("editor/apply_mode", "Brush", type=str)
@@ -1140,21 +1996,17 @@ class MainWindow(QMainWindow):
         default_brush_size = self._editor_preference_default(tool_name, apply_mode, "brush_size", 42)
         default_softness = self._editor_preference_default(tool_name, apply_mode, "softness", 35)
         default_opacity = self._editor_preference_default(tool_name, apply_mode, "opacity", 100)
+        default_flow = self._editor_preference_default(tool_name, apply_mode, "flow", 100)
         default_spacing = self._editor_preference_default(tool_name, apply_mode, "spacing", 1)
         default_tolerance = self._editor_preference_default(tool_name, apply_mode, "tolerance", 35)
         default_magic_mode = self._editor_preference_default(tool_name, apply_mode, "magic_mode", "Connected Region")
         default_edge_protect = self._editor_preference_default(tool_name, apply_mode, "edge_protect", True)
+        default_smart_feather = self._editor_preference_default(tool_name, apply_mode, "smart_feather", 0)
+        default_smart_expand = self._editor_preference_default(tool_name, apply_mode, "smart_expand", 1)
+        default_smart_cleanup_holes = self._editor_preference_default(tool_name, apply_mode, "smart_cleanup_holes", True)
+        default_smart_cleanup_speckles = self._editor_preference_default(tool_name, apply_mode, "smart_cleanup_speckles", True)
 
-        if self._has_startup_preset():
-            magic_mode = default_magic_mode
-            edge_protect = default_edge_protect
-            brush_size = default_brush_size
-            softness = default_softness
-            opacity = default_opacity
-            spacing = default_spacing
-            tolerance = default_tolerance
-        else:
-            startup_preset_name = self._startup_preset_name()
+        startup_preset_name = self._startup_preset_name()
 
         if startup_preset_name:
             magic_mode = default_magic_mode
@@ -1162,16 +2014,26 @@ class MainWindow(QMainWindow):
             brush_size = default_brush_size
             softness = default_softness
             opacity = default_opacity
+            flow = default_flow
             spacing = default_spacing
             tolerance = default_tolerance
+            smart_feather = default_smart_feather
+            smart_expand = default_smart_expand
+            smart_cleanup_holes = default_smart_cleanup_holes
+            smart_cleanup_speckles = default_smart_cleanup_speckles
         else:
             magic_mode = self._editor_state_value(tool_name, apply_mode, "magic_mode", default_magic_mode)
             edge_protect = self._editor_state_value(tool_name, apply_mode, "edge_protect", default_edge_protect)
             brush_size = self._editor_state_value(tool_name, apply_mode, "brush_size", default_brush_size)
             softness = self._editor_state_value(tool_name, apply_mode, "softness", default_softness)
             opacity = self._editor_state_value(tool_name, apply_mode, "opacity", default_opacity)
+            flow = self._editor_state_value(tool_name, apply_mode, "flow", default_flow)
             spacing = self._editor_state_value(tool_name, apply_mode, "spacing", default_spacing)
             tolerance = self._editor_state_value(tool_name, apply_mode, "tolerance", default_tolerance)
+            smart_feather = self._editor_state_value(tool_name, apply_mode, "smart_feather", default_smart_feather)
+            smart_expand = self._editor_state_value(tool_name, apply_mode, "smart_expand", default_smart_expand)
+            smart_cleanup_holes = self._editor_state_value(tool_name, apply_mode, "smart_cleanup_holes", default_smart_cleanup_holes)
+            smart_cleanup_speckles = self._editor_state_value(tool_name, apply_mode, "smart_cleanup_speckles", default_smart_cleanup_speckles)
 
         controls = [
             self.settings_panel.tool_combo,
@@ -1181,8 +2043,16 @@ class MainWindow(QMainWindow):
             self.settings_panel.brush_size_slider,
             self.settings_panel.softness_slider,
             self.settings_panel.opacity_slider,
+            self.settings_panel.flow_slider,
+            self.settings_panel.flow_value_box,
             self.settings_panel.spacing_slider,
             self.settings_panel.tolerance_slider,
+            self.settings_panel.smart_feather_slider,
+            self.settings_panel.smart_feather_value_box,
+            self.settings_panel.smart_expand_slider,
+            self.settings_panel.smart_expand_value_box,
+            self.settings_panel.smart_cleanup_holes_checkbox,
+            self.settings_panel.smart_cleanup_speckles_checkbox,
         ]
 
         for control in controls:
@@ -1201,8 +2071,13 @@ class MainWindow(QMainWindow):
         self.settings_panel.brush_size_slider.setValue(max(1, min(200, brush_size)))
         self.settings_panel.softness_slider.setValue(max(0, min(100, softness)))
         self.settings_panel.opacity_slider.setValue(max(1, min(100, opacity)))
+        self.settings_panel.flow_slider.setValue(max(1, min(100, flow)))
         self.settings_panel.spacing_slider.setValue(max(1, min(100, spacing)))
         self.settings_panel.tolerance_slider.setValue(max(0, min(255, tolerance)))
+        self.settings_panel.smart_feather_slider.setValue(max(0, min(25, int(smart_feather))))
+        self.settings_panel.smart_expand_slider.setValue(max(-10, min(10, int(smart_expand))))
+        self.settings_panel.smart_cleanup_holes_checkbox.setChecked(bool(smart_cleanup_holes))
+        self.settings_panel.smart_cleanup_speckles_checkbox.setChecked(bool(smart_cleanup_speckles))
 
         for control in controls:
             control.blockSignals(False)
@@ -1239,8 +2114,13 @@ class MainWindow(QMainWindow):
         self.settings_store.setValue(f"editor_state/{tool_key}/{mode_key}/brush_size", self.settings_panel.brush_size_slider.value())
         self.settings_store.setValue(f"editor_state/{tool_key}/{mode_key}/softness", self.settings_panel.softness_slider.value())
         self.settings_store.setValue(f"editor_state/{tool_key}/{mode_key}/opacity", self.settings_panel.opacity_slider.value())
+        self.settings_store.setValue(f"editor_state/{tool_key}/{mode_key}/flow", self.settings_panel.flow_slider.value())
         self.settings_store.setValue(f"editor_state/{tool_key}/{mode_key}/spacing", self.settings_panel.spacing_slider.value())
         self.settings_store.setValue(f"editor_state/{tool_key}/{mode_key}/tolerance", self.settings_panel.tolerance_slider.value())
+        self.settings_store.setValue(f"editor_state/{tool_key}/{mode_key}/smart_feather", self.settings_panel.smart_feather_slider.value())
+        self.settings_store.setValue(f"editor_state/{tool_key}/{mode_key}/smart_expand", self.settings_panel.smart_expand_slider.value())
+        self.settings_store.setValue(f"editor_state/{tool_key}/{mode_key}/smart_cleanup_holes", self.settings_panel.smart_cleanup_holes_checkbox.isChecked())
+        self.settings_store.setValue(f"editor_state/{tool_key}/{mode_key}/smart_cleanup_speckles", self.settings_panel.smart_cleanup_speckles_checkbox.isChecked())
 
     def _tool_preset_names_for_tool(self, tool_name: str) -> list[str]:
         preset_names = self.settings_store.value("tool_presets/names", [], type=list)
@@ -1374,10 +2254,18 @@ class MainWindow(QMainWindow):
             self.settings_panel.softness_value_box,
             self.settings_panel.opacity_slider,
             self.settings_panel.opacity_value_box,
+            self.settings_panel.flow_slider,
+            self.settings_panel.flow_value_box,
             self.settings_panel.spacing_slider,
             self.settings_panel.spacing_value_box,
             self.settings_panel.tolerance_slider,
             self.settings_panel.tolerance_value_box,
+            self.settings_panel.smart_feather_slider,
+            self.settings_panel.smart_feather_value_box,
+            self.settings_panel.smart_expand_slider,
+            self.settings_panel.smart_expand_value_box,
+            self.settings_panel.smart_cleanup_holes_checkbox,
+            self.settings_panel.smart_cleanup_speckles_checkbox,
         ]
 
         for widget in widgets:
@@ -1399,6 +2287,11 @@ class MainWindow(QMainWindow):
             int(merged.get("opacity", 100)),
         )
         self.settings_panel._set_slider_and_box_value(
+            self.settings_panel.flow_slider,
+            self.settings_panel.flow_value_box,
+            int(merged.get("flow", 100)),
+        )
+        self.settings_panel._set_slider_and_box_value(
             self.settings_panel.spacing_slider,
             self.settings_panel.spacing_value_box,
             int(merged.get("spacing", 1)),
@@ -1415,12 +2308,29 @@ class MainWindow(QMainWindow):
         self.settings_panel.edge_protect_check.setChecked(
             bool(merged.get("edge_protect", True))
         )
+        self.settings_panel._set_slider_and_box_value(
+            self.settings_panel.smart_feather_slider,
+            self.settings_panel.smart_feather_value_box,
+            int(merged.get("smart_feather", 0)),
+        )
+        self.settings_panel._set_slider_and_box_value(
+            self.settings_panel.smart_expand_slider,
+            self.settings_panel.smart_expand_value_box,
+            int(merged.get("smart_expand", 1)),
+        )
+        self.settings_panel.smart_cleanup_holes_checkbox.setChecked(
+            bool(merged.get("smart_cleanup_holes", True))
+        )
+        self.settings_panel.smart_cleanup_speckles_checkbox.setChecked(
+            bool(merged.get("smart_cleanup_speckles", True))
+        )
 
         for widget in widgets:
             widget.blockSignals(False)
 
         self.settings_panel.update_tool_visibility()
-
+        self._sync_preview_tool_settings()
+        
     def _apply_tool_preset_from_main_panel(self, tool_name: str, preset_name: str, preset_store: str):
         if not preset_name:
             return
@@ -1473,10 +2383,15 @@ class MainWindow(QMainWindow):
             "brush_size": read_value("brush_size", 42, int),
             "softness": read_value("softness", 35, int),
             "opacity": read_value("opacity", 100, int),
+            "flow": read_value("flow", 100, int),
             "spacing": read_value("spacing", 1, int),
             "tolerance": read_value("tolerance", 35, int),
             "magic_mode": read_value("magic_mode", "Connected Region", str),
             "edge_protect": read_value("edge_protect", True, bool),
+            "smart_feather": read_value("smart_feather", 0, int),
+            "smart_expand": read_value("smart_expand", 1, int),
+            "smart_cleanup_holes": read_value("smart_cleanup_holes", True, bool),
+            "smart_cleanup_speckles": read_value("smart_cleanup_speckles", True, bool),
         }
 
         self._apply_editor_values_to_settings_panel(tool_name, mode_name, values)
@@ -1499,10 +2414,15 @@ class MainWindow(QMainWindow):
             "brush_size": read_value("brush_size", 42, int),
             "softness": read_value("softness", 35, int),
             "opacity": read_value("opacity", 100, int),
+            "flow": read_value("flow", 100, int),
             "spacing": read_value("spacing", 1, int),
             "tolerance": read_value("tolerance", 35, int),
             "magic_mode": read_value("magic_mode", "Connected Region", str),
             "edge_protect": read_value("edge_protect", True, bool),
+            "smart_feather": read_value("smart_feather", 0, int),
+            "smart_expand": read_value("smart_expand", 1, int),
+            "smart_cleanup_holes": read_value("smart_cleanup_holes", True, bool),
+            "smart_cleanup_speckles": read_value("smart_cleanup_speckles", True, bool),
         }
 
         self._apply_editor_values_to_settings_panel(tool_name, mode_name, values)
@@ -1512,6 +2432,61 @@ class MainWindow(QMainWindow):
 
     def _persist_naming_suffix(self, text: str):
         self.settings_store.setValue("naming_suffix", text)
+
+    def _update_canvas_smart_settings(self):
+        if not hasattr(self, "preview_canvas"):
+            return
+
+        if not hasattr(self.preview_canvas, "set_smart_selection_settings"):
+            return
+
+        self.preview_canvas.set_smart_selection_settings(
+            feather=self.settings_panel.get_smart_feather(),
+            expand=self.settings_panel.get_smart_expand(),
+            fill_holes=self.settings_panel.get_smart_cleanup_holes(),
+            remove_speckles=self.settings_panel.get_smart_cleanup_speckles(),
+        )
+
+    def _run_preview_cleanup_action(self, action_name: str):
+        action_map = {
+            "fill_holes": (
+                "Fill Small Holes",
+                "cleanup_fill_small_holes",
+            ),
+            "remove_speckles": (
+                "Remove Speckles",
+                "cleanup_remove_speckles",
+            ),
+            "decontaminate_edges": (
+                "Decontaminate Edge Colors",
+                "cleanup_decontaminate_edges",
+            ),
+            "refine_alpha": (
+                "Refine Alpha Edge",
+                "cleanup_refine_alpha_edge",
+            ),
+            "restore_alpha": (
+                "Restore Original Edge Alpha",
+                "cleanup_restore_original_edge_alpha",
+            ),
+            "blend_edges": (
+                "Blend Model/Edit Seam",
+                "cleanup_blend_model_editor_edge",
+            ),
+        }
+
+        label, method_name = action_map.get(action_name, ("Cleanup", ""))
+
+        if not method_name or not hasattr(self.preview_canvas, method_name):
+            self.log(f"Cleanup unavailable: {label}")
+            return
+
+        changed = getattr(self.preview_canvas, method_name)()
+
+        if changed:
+            self.log(f"Cleanup applied: {label}")
+        else:
+            self.log(f"Cleanup made no visible change: {label}")
 
     def _persist_editor_settings(self):
         current_tool = self.settings_panel.tool_combo.currentText()
@@ -1525,8 +2500,13 @@ class MainWindow(QMainWindow):
         self.settings_store.setValue("editor/current/brush_size", self.settings_panel.brush_size_slider.value())
         self.settings_store.setValue("editor/current/softness", self.settings_panel.softness_slider.value())
         self.settings_store.setValue("editor/current/opacity", self.settings_panel.opacity_slider.value())
+        self.settings_store.setValue("editor/current/flow", self.settings_panel.flow_slider.value())
         self.settings_store.setValue("editor/current/spacing", self.settings_panel.spacing_slider.value())
         self.settings_store.setValue("editor/current/tolerance", self.settings_panel.tolerance_slider.value())
+        self.settings_store.setValue("editor/current/smart_feather", self.settings_panel.smart_feather_slider.value())
+        self.settings_store.setValue("editor/current/smart_expand", self.settings_panel.smart_expand_slider.value())
+        self.settings_store.setValue("editor/current/smart_cleanup_holes", self.settings_panel.smart_cleanup_holes_checkbox.isChecked())
+        self.settings_store.setValue("editor/current/smart_cleanup_speckles", self.settings_panel.smart_cleanup_speckles_checkbox.isChecked())
 
         self._persist_specific_editor_state(current_tool, current_apply_mode)
 
@@ -1537,6 +2517,7 @@ class MainWindow(QMainWindow):
             brush_size=self.settings_panel.brush_size_slider.value(),
             softness=self.settings_panel.softness_slider.value(),
             opacity=self.settings_panel.opacity_slider.value(),
+            flow=self.settings_panel.get_flow(),
             spacing=self.settings_panel.spacing_slider.value(),
             tolerance=self.settings_panel.tolerance_slider.value(),
         )
@@ -1546,6 +2527,7 @@ class MainWindow(QMainWindow):
         self.preview_canvas.set_edge_protect_enabled(
             self.settings_panel.edge_protect_check.isChecked()
         )
+        self._update_canvas_smart_settings()
 
     def run_selected_action(self):
         action = self.settings_panel.action_combo.currentText()
@@ -1573,28 +2555,360 @@ class MainWindow(QMainWindow):
         if not output_dir_text:
             return None
 
-        output_dir = Path(output_dir_text)
-        try:
-            output_dir.mkdir(parents=True, exist_ok=True)
-        except Exception:
-            return None
-
+        output_dir = Path(output_dir_text).expanduser()
         return output_dir if output_dir.exists() and output_dir.is_dir() else None
 
-    def _build_export_suffix(self) -> str:
-        model_name = self.settings_panel.model_combo.currentText().strip()
+    def _ensure_output_dir_for_export(self) -> Path | None:
+        output_dir_text = self.settings_panel.output_dir_edit.text().strip()
+        if not output_dir_text:
+            QMessageBox.information(
+                self,
+                "Output Folder Required",
+                "Choose or type an output folder before exporting.",
+            )
+            return None
+
+        output_dir = Path(output_dir_text).expanduser()
+
+        if output_dir.exists():
+            if output_dir.is_dir():
+                return output_dir
+
+            QMessageBox.warning(
+                self,
+                "Invalid Output Folder",
+                "The output path exists, but it is not a folder.",
+            )
+            self.log(f"Export blocked: output path is not a folder: {output_dir}")
+            return None
+
+        reply = QMessageBox.question(
+            self,
+            "Create Output Folder",
+            f'This folder does not exist:\n\n{output_dir}\n\nCreate it?',
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.Yes,
+        )
+
+        if reply != QMessageBox.StandardButton.Yes:
+            self.log(f"Export cancelled: output folder was not created: {output_dir}")
+            return None
+
+        try:
+            output_dir.mkdir(parents=True, exist_ok=True)
+        except Exception as e:
+            QMessageBox.warning(
+                self,
+                "Create Folder Failed",
+                f"Could not create the output folder.\n\n{e}",
+            )
+            self.log(f"Export failed: could not create output folder: {output_dir}")
+            self.log(f"Error: {e}")
+            return None
+
+        self.settings_panel.output_dir_edit.setText(str(output_dir))
+        self.log(f"Created output folder: {output_dir}")
+        return output_dir
+
+    def _normalized_manual_suffix(self) -> str:
         user_suffix = self.settings_panel.naming_edit.text().strip()
 
         if not user_suffix:
-            user_suffix = "_nobg"
+            user_suffix = "nobg"
 
-        if not user_suffix.startswith("_"):
-            user_suffix = f"_{user_suffix}"
+        user_suffix = user_suffix.replace(" ", "_")
 
-        if model_name:
-            return f"_{model_name}{user_suffix}"
+        while "__" in user_suffix:
+            user_suffix = user_suffix.replace("__", "_")
 
-        return user_suffix
+        user_suffix = user_suffix.strip("_")
+
+        if not user_suffix:
+            user_suffix = "nobg"
+
+        return f"_{user_suffix}"
+
+    def _update_suffix_preview_label(self, *_):
+        suffix_preview = self._build_export_suffix()
+        if hasattr(self.settings_panel, "suffix_preview_label"):
+            self.settings_panel.suffix_preview_label.setText(
+                f"Final suffix preview: {suffix_preview}"
+            )
+
+    def _persist_include_model_suffix(self, checked: bool):
+        self.settings_store.setValue("suffix/include_model_name", checked)
+        
+    def _persist_rembg_alpha_matting(self, checked: bool):
+        self.settings_store.setValue("prefs/rembg_alpha_matting", bool(checked))
+
+    def _persist_rembg_foreground_threshold(self, value: int):
+        self.settings_store.setValue("prefs/rembg_foreground_threshold", int(value))
+
+    def _persist_rembg_background_threshold(self, value: int):
+        self.settings_store.setValue("prefs/rembg_background_threshold", int(value))
+
+    def _persist_rembg_erode_size(self, value: int):
+        self.settings_store.setValue("prefs/rembg_erode_size", int(value))
+
+    def _persist_rembg_post_process_mask(self, checked: bool):
+        self.settings_store.setValue("prefs/rembg_post_process_mask", bool(checked))
+        
+    def _persist_inspyrenet_mode(self, value: str):
+        self.settings_store.setValue("prefs/inspyrenet_mode", value)
+
+    def _persist_inspyrenet_resize(self, value: str):
+        self.settings_store.setValue("prefs/inspyrenet_resize", value)
+
+    def _persist_inspyrenet_threshold(self, value: int):
+        self.settings_store.setValue("prefs/inspyrenet_threshold", int(value))
+
+    def _persist_modnet_matte_threshold(self, value: int):
+        self.settings_store.setValue("prefs/modnet_matte_threshold", int(value))
+
+    def _persist_modnet_edge_feather(self, value: int):
+        self.settings_store.setValue("prefs/modnet_edge_feather", int(value))
+
+    def _current_backend_options(self) -> dict:
+        backend_name = self._current_backend_name()
+
+        if backend_name == "rembg":
+            return {
+                "alpha_matting": self.settings_panel.rembg_alpha_matting_check.isChecked(),
+                "alpha_matting_foreground_threshold": self.settings_panel.rembg_fg_slider.value(),
+                "alpha_matting_background_threshold": self.settings_panel.rembg_bg_slider.value(),
+                "alpha_matting_erode_size": self.settings_panel.rembg_erode_slider.value(),
+                "post_process_mask": self.settings_panel.rembg_post_process_check.isChecked(),
+            }
+
+        if backend_name == "InSPyReNet":
+            threshold_value = 50
+            if hasattr(self.settings_panel, "inspyrenet_threshold_slider"):
+                threshold_value = self.settings_panel.inspyrenet_threshold_slider.value()
+
+            return {
+                "mode": self.settings_panel.inspyrenet_mode_combo.currentText().strip(),
+                "resize": self.settings_panel.inspyrenet_resize_combo.currentText().strip(),
+                "threshold": max(0.0, min(1.0, float(threshold_value) / 100.0)),
+            }
+
+        if backend_name == "MODNet":
+            return {
+                "matte_threshold": max(0.0, min(1.0, float(self.settings_panel.modnet_threshold_slider.value()) / 100.0)),
+                "edge_feather": float(self.settings_panel.modnet_feather_slider.value()),
+            }
+
+        return {}
+        
+    def _update_backend_recommendation_note(self):
+        if not hasattr(self.settings_panel, "set_backend_recommendation_text"):
+            return
+
+        selected_index = self.state.selected_index
+        if selected_index is None:
+            self.settings_panel.set_backend_recommendation_text(
+                "Recommended backend/model: rembg + u2netp for most images. MODNet is best for portraits."
+            )
+            return
+
+        item = self.state.get_item(selected_index)
+        if item is None:
+            self.settings_panel.set_backend_recommendation_text(
+                "Recommended backend/model: rembg + u2netp for most images. MODNet is best for portraits."
+            )
+            return
+
+        filename = str(getattr(item, "filename", "")).lower()
+        dims = str(getattr(item, "dimensions", ""))
+        width = 0
+        height = 0
+
+        if "x" in dims:
+            try:
+                width_text, height_text = dims.lower().split("x", 1)
+                width = int(width_text.strip())
+                height = int(height_text.strip())
+            except Exception:
+                width = 0
+                height = 0
+
+        portrait_keywords = (
+            "portrait", "selfie", "headshot", "person", "people", "model", "face", "wedding", "bride", "groom"
+        )
+        anime_keywords = (
+            "anime", "manga", "cartoon", "illustration", "waifu", "chibi"
+        )
+
+        if any(keyword in filename for keyword in anime_keywords):
+            self.settings_panel.set_backend_recommendation_text(
+                "Recommended backend/model: rembg + isnet-anime for anime or illustrated subjects."
+            )
+            return
+
+        if any(keyword in filename for keyword in portrait_keywords):
+            self.settings_panel.set_backend_recommendation_text(
+                "Recommended backend/model: MODNet for portraits, or rembg + u2net_human_seg for a rembg-based portrait option."
+            )
+            return
+
+        if height > width and width > 0 and height > 0:
+            self.settings_panel.set_backend_recommendation_text(
+                "Recommended backend/model: likely portrait-oriented image — try MODNet first, or rembg + u2net_human_seg."
+            )
+            return
+
+        self.settings_panel.set_backend_recommendation_text(
+            "Recommended backend/model: rembg + u2netp for most images. Try InSPyReNet on harder general cutouts."
+        )
+
+    def _persist_removal_mode(self, removal_mode: str):
+        self.settings_store.setValue("prefs/removal_mode", removal_mode)
+
+    def _persist_color_removal_hex(self):
+        if hasattr(self.settings_panel, "get_selected_removal_hex"):
+            self.settings_store.setValue(
+                "prefs/color_removal_hex",
+                self.settings_panel.get_selected_removal_hex(),
+            )
+
+    def _persist_color_removal_threshold(self, value: int):
+        self.settings_store.setValue("prefs/color_removal_threshold", int(value))
+
+    def _persist_color_removal_match_mode(self, value: str):
+        self.settings_store.setValue("prefs/color_removal_match_mode", value)
+
+    def _persist_color_removal_feather(self, value: int):
+        self.settings_store.setValue("prefs/color_removal_feather", int(value))
+
+    def _persist_color_removal_reduce_spill(self, checked: bool):
+        self.settings_store.setValue("prefs/color_removal_reduce_spill", bool(checked))
+
+    def _begin_preview_color_pick(self):
+        if not hasattr(self.preview_canvas, "begin_color_pick_mode"):
+            QMessageBox.information(
+                self,
+                "Preview Color Pick Unavailable",
+                "The preview canvas has not been updated for color picking yet.",
+            )
+            return
+
+        self.preview_canvas.begin_color_pick_mode()
+        self.log("Color Removal: click a pixel in the preview to pick the target color.")
+
+    def _on_preview_color_sampled(self, color_hex: str):
+        if hasattr(self.settings_panel, "set_selected_removal_hex"):
+            self.settings_panel.set_selected_removal_hex(color_hex)
+            self._persist_color_removal_hex()
+            self.log(f"Color Removal target picked from preview: {color_hex}")
+
+    def _current_removal_mode(self) -> str:
+        if hasattr(self.settings_panel, "removal_mode_combo"):
+            return self.settings_panel.removal_mode_combo.currentText().strip()
+        return "AI Removal"
+
+    def _current_color_removal_options(self) -> dict:
+        return {
+            "target_color": self.settings_panel.get_selected_removal_color(),
+            "target_hex": self.settings_panel.get_selected_removal_hex(),
+            "threshold": self.settings_panel.get_color_threshold(),
+            "match_mode": self.settings_panel.get_color_match_mode(),
+            "feather": self.settings_panel.get_color_feather(),
+            "reduce_spill": self.settings_panel.get_color_spill_cleanup(),
+        }
+
+    def _persist_backend_selection(self, backend_name: str):
+        self.settings_store.setValue("prefs/backend", backend_name)
+
+    def _current_backend_name(self) -> str:
+        if hasattr(self.settings_panel, "backend_combo"):
+            return self.settings_panel.backend_combo.currentText().strip()
+        return "rembg"
+
+    def _ensure_supported_backend_for_processing(self) -> bool:
+        if self._current_removal_mode() == "Color Removal":
+            return True
+
+        backend_name = self._current_backend_name()
+
+        if backend_name in {"rembg", "InSPyReNet", "MODNet"}:
+            return True
+
+        QMessageBox.information(
+            self,
+            "Backend Not Wired Yet",
+            f'The "{backend_name}" backend is listed for future expansion, '
+            "but processing/export is not wired for it yet.",
+        )
+        self.log(f'Blocked processing/export for unsupported backend: {backend_name}')
+        return False
+
+    def _persist_watch_folder_path(self, text: str):
+        self.settings_store.setValue("watch/path", text.strip())
+
+    def _persist_watch_include_subfolders(self, checked: bool):
+        self.settings_store.setValue("watch/include_subfolders", checked)
+
+    def _on_watch_folder_path_changed(self, text: str):
+        if self.watch_worker is not None and self.watch_worker_thread is not None:
+            return
+
+        folder_path = text.strip()
+        if not folder_path:
+            self._update_watch_status_label(False, "", "No folder selected")
+            return
+
+        folder = Path(folder_path).expanduser()
+        if folder.exists() and folder.is_dir():
+            self._update_watch_status_label(False, str(folder), "Ready")
+        else:
+            self._update_watch_status_label(False, folder_path, "Folder not found")
+
+    def _build_export_suffix(self) -> str:
+        removal_mode = self._current_removal_mode()
+        backend_name = self._current_backend_name()
+        model_name = self.settings_panel.model_combo.currentText().strip()
+        manual_suffix = self._normalized_manual_suffix()
+        include_model_name = self.settings_panel.include_model_suffix_check.isChecked()
+
+        parts = []
+
+        if include_model_name:
+            if removal_mode == "Color Removal":
+                parts.append("color_removal")
+            elif backend_name == "rembg":
+                if model_name:
+                    parts.append(model_name)
+            elif backend_name:
+                parts.append(backend_name.lower().replace(" ", "_"))
+
+        parts.append(manual_suffix.strip("_"))
+
+        final_suffix = "_" + "_".join(part for part in parts if part)
+
+        while "__" in final_suffix:
+            final_suffix = final_suffix.replace("__", "_")
+
+        return final_suffix
+
+    def _preview_export_filename(self) -> str:
+        output_format = self.settings_panel.output_format_combo.currentText().strip().lower()
+        if not output_format:
+            output_format = "png"
+
+        base_name = "example_image"
+
+        selected_index = self.state.selected_index
+        if selected_index is not None:
+            item = self.state.get_item(selected_index)
+            if item is not None and getattr(item, "source_path", None) is not None:
+                base_name = Path(item.source_path).stem
+
+        return f"{base_name}{self._build_export_suffix()}.{output_format}"
+
+    def _update_export_filename_preview_label(self, *_):
+        if hasattr(self.settings_panel, "filename_preview_label"):
+            self.settings_panel.filename_preview_label.setText(
+                f"Final filename preview: {self._preview_export_filename()}"
+            )
 
     def _get_checked_or_all_indices(self) -> list[int]:
         checked = self.file_panel.get_checked_user_indices()
@@ -1654,31 +2968,40 @@ class MainWindow(QMainWindow):
     def _has_edited_preview(self, item: ImageItem) -> bool:
         return item.edited_preview_path is not None and Path(item.edited_preview_path).exists()
 
-    def _update_watch_status_label(self, enabled: bool, folder_path: str):
+    def _update_watch_status_label(self, enabled: bool, folder_path: str, detail: str = ""):
         if enabled and folder_path:
-            self.settings_panel.watch_status_label.setText(f"Watch status: On ({folder_path})")
+            text = f"Watch status: Running — {folder_path}"
+        elif folder_path:
+            text = f"Watch status: Off — {detail or folder_path}"
         else:
-            self.settings_panel.watch_status_label.setText("Watch status: Off")
+            text = f"Watch status: Off{(' — ' + detail) if detail else ''}"
+
+        self._watch_status_text = text
+
+        if self._preferences_dialog is not None:
+            self._preferences_dialog.watch_status_label.setText(text)
 
     def _start_watch_folder(self):
-        folder_path = self.settings_panel.watch_folder_edit.text().strip()
-        include_subfolders = self.settings_panel.watch_include_subfolders_check.isChecked()
+        folder_path = self._watch_folder_path_from_settings()
+        include_subfolders = self._watch_include_subfolders_from_settings()
 
         if not folder_path:
             self.log("Watch folder could not start: no folder selected.")
-            self.settings_panel.watch_enable_check.blockSignals(True)
-            self.settings_panel.watch_enable_check.setChecked(False)
-            self.settings_panel.watch_enable_check.blockSignals(False)
-            self._update_watch_status_label(False, "")
+            self._update_watch_status_label(False, "", "No folder selected")
+            if self._preferences_dialog is not None:
+                self._preferences_dialog.watch_enable_check.blockSignals(True)
+                self._preferences_dialog.watch_enable_check.setChecked(False)
+                self._preferences_dialog.watch_enable_check.blockSignals(False)
             return
 
-        folder = Path(folder_path)
+        folder = Path(folder_path).expanduser()
         if not folder.exists() or not folder.is_dir():
-            self.log(f"Watch folder could not start: invalid directory: {folder_path}")
-            self.settings_panel.watch_enable_check.blockSignals(True)
-            self.settings_panel.watch_enable_check.setChecked(False)
-            self.settings_panel.watch_enable_check.blockSignals(False)
-            self._update_watch_status_label(False, "")
+            self.log(f"Watch folder could not start: invalid directory: {folder}")
+            self._update_watch_status_label(False, str(folder), "Folder not found")
+            if self._preferences_dialog is not None:
+                self._preferences_dialog.watch_enable_check.blockSignals(True)
+                self._preferences_dialog.watch_enable_check.setChecked(False)
+                self._preferences_dialog.watch_enable_check.blockSignals(False)
             return
 
         if self.watch_worker_thread is not None or self.watch_worker is not None:
@@ -1686,7 +3009,7 @@ class MainWindow(QMainWindow):
 
         self.watch_worker_thread = QThread(self)
         self.watch_worker = WatchFolderWorker(
-            folder_path=folder_path,
+            folder_path=str(folder),
             include_subfolders=include_subfolders,
             poll_interval_seconds=2.0,
         )
@@ -1700,13 +3023,25 @@ class MainWindow(QMainWindow):
         self.watch_worker_thread.finished.connect(self._cleanup_watch_worker)
 
         self.watch_worker_thread.start()
-        self._update_watch_status_label(True, folder_path)
+        self._persist_watch_enabled(True)
+        self._update_watch_status_label(True, str(folder))
 
     def _stop_watch_folder(self):
+        current_folder = self._watch_folder_path_from_settings()
+
         if self.watch_worker is not None:
             self.watch_worker.stop()
 
-        self._update_watch_status_label(False, "")
+        self._persist_watch_enabled(False)
+
+        if current_folder:
+            folder = Path(current_folder).expanduser()
+            if folder.exists() and folder.is_dir():
+                self._update_watch_status_label(False, str(folder), "Ready")
+            else:
+                self._update_watch_status_label(False, current_folder, "Folder not found")
+        else:
+            self._update_watch_status_label(False, "", "No folder selected")
 
     def _cleanup_watch_worker(self):
         if self.watch_worker is not None:
@@ -1728,34 +3063,51 @@ class MainWindow(QMainWindow):
 
     def _on_watch_error(self, message: str):
         self.log(f"Watch folder error: {message}")
-        self.settings_panel.watch_enable_check.blockSignals(True)
-        self.settings_panel.watch_enable_check.setChecked(False)
-        self.settings_panel.watch_enable_check.blockSignals(False)
-        self._update_watch_status_label(False, "")
+
+        if self._preferences_dialog is not None:
+            self._preferences_dialog.watch_enable_check.blockSignals(True)
+            self._preferences_dialog.watch_enable_check.setChecked(False)
+            self._preferences_dialog.watch_enable_check.blockSignals(False)
+
+        current_folder = self._watch_folder_path_from_settings()
+        self._update_watch_status_label(False, current_folder, f"Error: {message}")
 
     def _on_watch_new_files_detected(self, file_paths: list):
         if not file_paths:
             return
 
         existing_paths = {str(item.source_path.resolve()) for item in self.state.items}
-        added_any = False
+        added_count = 0
+        skipped_count = 0
 
         for file_path_str in file_paths:
             path = Path(file_path_str)
             resolved = str(path.resolve())
             if resolved in existing_paths:
+                skipped_count += 1
                 continue
 
             self._add_image_item(path)
             existing_paths.add(resolved)
-            added_any = True
+            added_count += 1
 
-        if added_any:
+        if added_count:
             self._refresh_type_filter_options()
             self.rebuild_file_panel()
 
+        self.log(
+            f"Watch folder scan complete: added {added_count} new file(s)"
+            + (f", skipped {skipped_count} duplicate(s)." if skipped_count else ".")
+        )
+
     def log(self, message: str):
         self.log_panel.append(message)
+
+        try:
+            with self.app_log_path.open("a", encoding="utf-8") as f:
+                f.write(f"{message}\n")
+        except Exception:
+            pass
 
     def dragEnterEvent(self, event):
         if event.mimeData().hasUrls():
@@ -1909,6 +3261,7 @@ class MainWindow(QMainWindow):
         real_index = self.file_panel.get_selected_user_index()
         if real_index >= 0:
             self.select_item(real_index, source="panel")
+            self._update_export_filename_preview_label()
 
     def select_item(self, index: int, source: str | None = None):
         item = self.state.get_item(index)
@@ -1947,6 +3300,8 @@ class MainWindow(QMainWindow):
         else:
             self.preview_canvas.clear_preview()
             self.log(f"Could not load preview: {item.source_path}")
+            
+        self._update_backend_recommendation_note()
 
     def _on_preview_image_edited(self, save_path_str: str):
         selected_index = self.state.selected_index
@@ -2181,6 +3536,9 @@ class MainWindow(QMainWindow):
             QMessageBox.information(self, "Processing", "An image is already being processed.")
             return
 
+        if not self._ensure_supported_backend_for_processing():
+            return
+
         selected_index = self.state.selected_index
         if selected_index is None:
             QMessageBox.information(self, "No Selection", "Select an image first.")
@@ -2189,14 +3547,6 @@ class MainWindow(QMainWindow):
         item = self.state.get_item(selected_index)
         if item is None:
             QMessageBox.information(self, "No Selection", "Select an image first.")
-            return
-
-        if self.settings_panel.removal_mode_combo.currentText() != "AI Removal":
-            QMessageBox.information(
-                self,
-                "Not Yet Available",
-                "Color Removal will be added later. Use AI Removal for now.",
-            )
             return
 
         self.batch_mode = False
@@ -2216,12 +3566,7 @@ class MainWindow(QMainWindow):
             QMessageBox.information(self, "Processing", "A processing job is already active.")
             return
 
-        if self.settings_panel.removal_mode_combo.currentText() != "AI Removal":
-            QMessageBox.information(
-                self,
-                "Not Yet Available",
-                "Color Removal will be added later. Use AI Removal for now.",
-            )
+        if not self._ensure_supported_backend_for_processing():
             return
 
         checked = self.file_panel.get_checked_user_indices()
@@ -2286,12 +3631,7 @@ class MainWindow(QMainWindow):
             QMessageBox.information(self, "No Images", "Load images first.")
             return
 
-        if self.settings_panel.removal_mode_combo.currentText() != "AI Removal":
-            QMessageBox.information(
-                self,
-                "Not Yet Available",
-                "Color Removal will be added later. Use AI Removal for now.",
-            )
+        if not self._ensure_supported_backend_for_processing():
             return
 
         skip_processed = self.settings_panel.skip_processed_check.isChecked()
@@ -2357,20 +3697,10 @@ class MainWindow(QMainWindow):
             QMessageBox.information(self, "No Selection", "Select an image first.")
             return
 
-        if self._get_output_dir() is None:
-            QMessageBox.information(
-                self,
-                "Output Folder Required",
-                "Choose a valid output folder before exporting.",
-            )
+        if self._ensure_output_dir_for_export() is None:
             return
-
-        if self.settings_panel.removal_mode_combo.currentText() != "AI Removal":
-            QMessageBox.information(
-                self,
-                "Not Yet Available",
-                "Color Removal export will be added later. Use AI Removal for now.",
-            )
+            
+        if not self._ensure_supported_backend_for_processing():
             return
 
         self.batch_mode = False
@@ -2390,20 +3720,10 @@ class MainWindow(QMainWindow):
             QMessageBox.information(self, "Processing", "A job is already active.")
             return
 
-        if self._get_output_dir() is None:
-            QMessageBox.information(
-                self,
-                "Output Folder Required",
-                "Choose a valid output folder before exporting.",
-            )
+        if not self._ensure_supported_backend_for_processing():
             return
 
-        if self.settings_panel.removal_mode_combo.currentText() != "AI Removal":
-            QMessageBox.information(
-                self,
-                "Not Yet Available",
-                "Color Removal export will be added later. Use AI Removal for now.",
-            )
+        if self._ensure_output_dir_for_export() is None:
             return
 
         checked = self.file_panel.get_checked_user_indices()
@@ -2440,14 +3760,13 @@ class MainWindow(QMainWindow):
             return
 
         self.batch_total = len(self.batch_queue)
-        self.batch_processed_count = 0
-        self.batch_success_count = 0
-        self.batch_error_count = 0
         self.batch_mode = True
         self.batch_action = "export"
         self.cancel_requested = False
         self.batch_exported_files = []
-
+        self.batch_processed_count = 0
+        self.batch_success_count = 0
+        self.batch_error_count = 0
         self.log(f"Starting batch export for {self.batch_total} selected image(s).")
         self._start_next_batch_item()
 
@@ -2460,20 +3779,10 @@ class MainWindow(QMainWindow):
             QMessageBox.information(self, "No Images", "Load images first.")
             return
 
-        if self._get_output_dir() is None:
-            QMessageBox.information(
-                self,
-                "Output Folder Required",
-                "Choose a valid output folder before exporting.",
-            )
+        if not self._ensure_supported_backend_for_processing():
             return
 
-        if self.settings_panel.removal_mode_combo.currentText() != "AI Removal":
-            QMessageBox.information(
-                self,
-                "Not Yet Available",
-                "Color Removal export will be added later. Use AI Removal for now.",
-            )
+        if self._ensure_output_dir_for_export() is None:
             return
 
         skip_exported = self.settings_panel.skip_exported_check.isChecked()
@@ -2625,10 +3934,20 @@ class MainWindow(QMainWindow):
                 self._start_next_batch_item()
             return
 
-        model_name = self.settings_panel.model_combo.currentText()
+        removal_mode = self._current_removal_mode()
+
+        if removal_mode == "Color Removal":
+            backend_name = "Color Removal"
+            backend_options = self._current_color_removal_options()
+            model_name = "color-removal"
+        else:
+            backend_name = self._current_backend_name()
+            backend_options = self._current_backend_options()
+            model_name = self.settings_panel.model_combo.currentText()
+
         token = self._cache_token(item.source_path)
         processed_preview_path = self.processed_preview_cache_dir / f"{token}_processed.png"
-
+        
         self.current_processing_index = item_index
         item.status = "processing"
         self._refresh_item_display(item_index)
@@ -2646,7 +3965,10 @@ class MainWindow(QMainWindow):
         item_total = self.batch_total if self.batch_mode else 1
 
         self.log(f"[{item_number}/{item_total}] Processing preview: {item.filename}")
+        self.log(f"Removal mode: {removal_mode}")
+        self.log(f"Backend: {backend_name}")
         self.log(f"Model: {model_name}")
+        self.log(f"Backend options: {backend_options}")
         self.log(f"Input preview path: {preview_input_path}")
         self.log(f"Output preview path: {processed_preview_path}")
 
@@ -2656,8 +3978,10 @@ class MainWindow(QMainWindow):
             input_path=Path(preview_input_path),
             output_path=processed_preview_path,
             model_name=model_name,
+            backend_name=backend_name,
+            backend_options=backend_options,
+            removal_mode=removal_mode,
         )
-        self.preview_worker.moveToThread(self.preview_worker_thread)
 
         self.preview_worker_thread.started.connect(self.preview_worker.run)
         self.preview_worker.status.connect(self.log)
@@ -2714,7 +4038,17 @@ class MainWindow(QMainWindow):
             self._handle_post_item_completion(error=True)
             return
 
-        model_name = self.settings_panel.model_combo.currentText()
+        removal_mode = self._current_removal_mode()
+
+        if removal_mode == "Color Removal":
+            backend_name = "Color Removal"
+            backend_options = self._current_color_removal_options()
+            model_name = "color-removal"
+        else:
+            backend_name = self._current_backend_name()
+            backend_options = self._current_backend_options()
+            model_name = self.settings_panel.model_combo.currentText()
+
         suffix = self._build_export_suffix()
         output_format = self.settings_panel.output_format_combo.currentText().upper()
         background_mode = self.settings_panel.background_mode_combo.currentText()
@@ -2751,6 +4085,10 @@ class MainWindow(QMainWindow):
 
         self.log(f"Starting full-resolution export for: {item.filename}")
         self.log(f"Source image: {item.source_path}")
+        self.log(f"Removal mode: {removal_mode}")
+        self.log(f"Backend: {backend_name}")
+        self.log(f"Model: {model_name}")
+        self.log(f"Backend options: {backend_options}")
         self.log(f"Full-res temp path: {fullres_cache_path}")
         self.log(f"Filename suffix: {suffix}")
         self.log(f"Apply preview edits: {'yes' if resolved_apply_preview_edits and edited_preview_mask_path else 'no'}")
@@ -2772,6 +4110,9 @@ class MainWindow(QMainWindow):
             model_name=model_name,
             background_mode=background_mode,
             background_color_name=background_color,
+            backend_name=backend_name,
+            backend_options=backend_options,
+            removal_mode=removal_mode,
             base_preview_mask_path=base_preview_mask_path,
             edited_preview_mask_path=edited_preview_mask_path,
             apply_preview_edits=(
@@ -2998,5 +4339,12 @@ class MainWindow(QMainWindow):
         self._stop_watch_folder()
         self._shutdown_running_threads()
         self._persist_editor_settings()
+        self._persist_loaded_file_list()
+
+        self.settings_store.setValue("layout/window_geometry", self.saveGeometry())
+        self.settings_store.setValue("layout/main_vertical_splitter", self.main_vertical_splitter.saveState())
+        self.settings_store.setValue("layout/content_splitter", self.content_splitter.saveState())
+        self.settings_store.setValue("layout/log_panel_visible", self.log_frame.isVisible())
+
         self.settings_store.sync()
         super().closeEvent(event)

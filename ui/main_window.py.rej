@@ -1,0 +1,278 @@
+--- ui/main_window.py
++++ ui/main_window.py
+@@ -668,6 +668,9 @@
+     def _apply_general_preferences_to_ui(self):
+         backend_name = self._general_preference_default("backend", "rembg")
+         model_name = self._general_preference_default("model", "u2netp")
++        removal_mode = self._general_preference_default("removal_mode", "AI Removal")
++        color_removal_hex = self._general_preference_default("color_removal_hex", "#FFFFFF")
++        color_removal_threshold = self._general_preference_default("color_removal_threshold", 30)
+ 
+         rembg_alpha_matting = self._general_preference_default("rembg_alpha_matting", False)
+         rembg_foreground_threshold = self._general_preference_default("rembg_foreground_threshold", 240)
+@@ -746,6 +749,17 @@
+ 
+         if self.settings_panel.model_combo.findText(model_name) >= 0:
+             self.settings_panel.model_combo.setCurrentText(model_name)
++
++        if self.settings_panel.removal_mode_combo.findText(removal_mode) >= 0:
++            self.settings_panel.removal_mode_combo.setCurrentText(removal_mode)
++
++        if hasattr(self.settings_panel, "set_selected_removal_hex"):
++            self.settings_panel.set_selected_removal_hex(color_removal_hex)
++
++        if hasattr(self.settings_panel, "threshold_slider"):
++            self.settings_panel.threshold_slider.setValue(
++                max(0, min(255, int(color_removal_threshold)))
++            )
+ 
+         if self.settings_panel.action_combo.findText(action_name) >= 0:
+             self.settings_panel.action_combo.setCurrentText(action_name)
+@@ -1735,6 +1749,13 @@
+         self.file_panel.clear_all_btn.clicked.connect(self.clear_all_items)
+         self.file_panel.load_watch_folder_btn.clicked.connect(self.load_watch_folder_into_app)
+ 
++        self.settings_panel.removal_mode_combo.currentTextChanged.connect(self._persist_removal_mode)
++        self.settings_panel.removal_mode_combo.currentTextChanged.connect(self._update_suffix_preview_label)
++        self.settings_panel.removal_mode_combo.currentTextChanged.connect(self._update_export_filename_preview_label)
++        self.settings_panel.threshold_slider.valueChanged.connect(self._persist_color_removal_threshold)
++        self.settings_panel.color_hex_edit.editingFinished.connect(self._persist_color_removal_hex)
++        self.settings_panel.pick_color_btn.clicked.connect(self._persist_color_removal_hex)
++
+         self.settings_panel.backend_combo.currentTextChanged.connect(self._persist_backend_selection)
+         self.settings_panel.backend_combo.currentTextChanged.connect(self._update_suffix_preview_label)
+         self.settings_panel.backend_combo.currentTextChanged.connect(self._update_export_filename_preview_label)
+@@ -2701,6 +2722,31 @@
+             "Recommended backend/model: rembg + u2netp for most images. Try InSPyReNet on harder general cutouts."
+         )
+ 
++    def _persist_removal_mode(self, removal_mode: str):
++        self.settings_store.setValue("prefs/removal_mode", removal_mode)
++
++    def _persist_color_removal_hex(self):
++        if hasattr(self.settings_panel, "get_selected_removal_hex"):
++            self.settings_store.setValue(
++                "prefs/color_removal_hex",
++                self.settings_panel.get_selected_removal_hex(),
++            )
++
++    def _persist_color_removal_threshold(self, value: int):
++        self.settings_store.setValue("prefs/color_removal_threshold", int(value))
++
++    def _current_removal_mode(self) -> str:
++        if hasattr(self.settings_panel, "removal_mode_combo"):
++            return self.settings_panel.removal_mode_combo.currentText().strip()
++        return "AI Removal"
++
++    def _current_color_removal_options(self) -> dict:
++        return {
++            "target_color": self.settings_panel.get_selected_removal_color(),
++            "target_hex": self.settings_panel.get_selected_removal_hex(),
++            "threshold": self.settings_panel.get_color_threshold(),
++        }
++
+     def _persist_backend_selection(self, backend_name: str):
+         self.settings_store.setValue("prefs/backend", backend_name)
+ 
+@@ -2710,6 +2756,9 @@
+         return "rembg"
+ 
+     def _ensure_supported_backend_for_processing(self) -> bool:
++        if self._current_removal_mode() == "Color Removal":
++            return True
++
+         backend_name = self._current_backend_name()
+ 
+         if backend_name in {"rembg", "InSPyReNet", "MODNet"}:
+@@ -2746,6 +2795,7 @@
+             self._update_watch_status_label(False, folder_path, "Folder not found")
+ 
+     def _build_export_suffix(self) -> str:
++        removal_mode = self._current_removal_mode()
+         backend_name = self._current_backend_name()
+         model_name = self.settings_panel.model_combo.currentText().strip()
+         manual_suffix = self._normalized_manual_suffix()
+@@ -2754,7 +2804,9 @@
+         parts = []
+ 
+         if include_model_name:
+-            if backend_name == "rembg":
++            if removal_mode == "Color Removal":
++                parts.append("color_removal")
++            elif backend_name == "rembg":
+                 if model_name:
+                     parts.append(model_name)
+             elif backend_name:
+@@ -2768,7 +2820,7 @@
+             final_suffix = final_suffix.replace("__", "_")
+ 
+         return final_suffix
+-        
++
+     def _preview_export_filename(self) -> str:
+         output_format = self.settings_panel.output_format_combo.currentText().strip().lower()
+         if not output_format:
+@@ -3429,14 +3481,6 @@
+             QMessageBox.information(self, "No Selection", "Select an image first.")
+             return
+ 
+-        if self.settings_panel.removal_mode_combo.currentText() != "AI Removal":
+-            QMessageBox.information(
+-                self,
+-                "Not Yet Available",
+-                "Color Removal will be added later. Use AI Removal for now.",
+-            )
+-            return
+-
+         self.batch_mode = False
+         self.batch_action = "process"
+         self.batch_queue = []
+@@ -3457,14 +3501,6 @@
+         if not self._ensure_supported_backend_for_processing():
+             return
+ 
+-        if self.settings_panel.removal_mode_combo.currentText() != "AI Removal":
+-            QMessageBox.information(
+-                self,
+-                "Not Yet Available",
+-                "Color Removal will be added later. Use AI Removal for now.",
+-            )
+-            return
+-
+         checked = self.file_panel.get_checked_user_indices()
+         if not checked:
+             QMessageBox.information(self, "Nothing Selected", "No selected files to process.")
+@@ -3530,14 +3566,6 @@
+         if not self._ensure_supported_backend_for_processing():
+             return
+ 
+-        if self.settings_panel.removal_mode_combo.currentText() != "AI Removal":
+-            QMessageBox.information(
+-                self,
+-                "Not Yet Available",
+-                "Color Removal will be added later. Use AI Removal for now.",
+-            )
+-            return
+-
+         skip_processed = self.settings_panel.skip_processed_check.isChecked()
+ 
+         self.batch_queue, skipped_missing_preview, skipped_already_processed = self._summarize_process_candidates(
+@@ -3605,14 +3633,6 @@
+             return
+             
+         if not self._ensure_supported_backend_for_processing():
+-            return
+-
+-        if self.settings_panel.removal_mode_combo.currentText() != "AI Removal":
+-            QMessageBox.information(
+-                self,
+-                "Not Yet Available",
+-                "Color Removal export will be added later. Use AI Removal for now.",
+-            )
+             return
+ 
+         self.batch_mode = False
+@@ -3636,14 +3656,6 @@
+             return
+ 
+         if self._ensure_output_dir_for_export() is None:
+-            return
+-
+-        if self.settings_panel.removal_mode_combo.currentText() != "AI Removal":
+-            QMessageBox.information(
+-                self,
+-                "Not Yet Available",
+-                "Color Removal export will be added later. Use AI Removal for now.",
+-            )
+             return
+ 
+         checked = self.file_panel.get_checked_user_indices()
+@@ -3705,14 +3717,6 @@
+         if self._ensure_output_dir_for_export() is None:
+             return
+ 
+-        if self.settings_panel.removal_mode_combo.currentText() != "AI Removal":
+-            QMessageBox.information(
+-                self,
+-                "Not Yet Available",
+-                "Color Removal export will be added later. Use AI Removal for now.",
+-            )
+-            return
+-
+         skip_exported = self.settings_panel.skip_exported_check.isChecked()
+ 
+         self.batch_queue, skipped_already_exported = self._summarize_export_candidates(
+@@ -3862,9 +3866,17 @@
+                 self._start_next_batch_item()
+             return
+ 
+-        backend_name = self._current_backend_name()
+-        backend_options = self._current_backend_options()
+-        model_name = self.settings_panel.model_combo.currentText()
++        removal_mode = self._current_removal_mode()
++
++        if removal_mode == "Color Removal":
++            backend_name = "Color Removal"
++            backend_options = self._current_color_removal_options()
++            model_name = "color-removal"
++        else:
++            backend_name = self._current_backend_name()
++            backend_options = self._current_backend_options()
++            model_name = self.settings_panel.model_combo.currentText()
++
+         token = self._cache_token(item.source_path)
+         processed_preview_path = self.processed_preview_cache_dir / f"{token}_processed.png"
+         
+@@ -3885,6 +3897,7 @@
+         item_total = self.batch_total if self.batch_mode else 1
+ 
+         self.log(f"[{item_number}/{item_total}] Processing preview: {item.filename}")
++        self.log(f"Removal mode: {removal_mode}")
+         self.log(f"Backend: {backend_name}")
+         self.log(f"Model: {model_name}")
+         self.log(f"Backend options: {backend_options}")
+@@ -3899,6 +3912,7 @@
+             model_name=model_name,
+             backend_name=backend_name,
+             backend_options=backend_options,
++            removal_mode=removal_mode,
+         )
+ 
+         self.preview_worker_thread.started.connect(self.preview_worker.run)
+@@ -3956,9 +3970,17 @@
+             self._handle_post_item_completion(error=True)
+             return
+ 
+-        backend_name = self._current_backend_name()
+-        backend_options = self._current_backend_options()
+-        model_name = self.settings_panel.model_combo.currentText()
++        removal_mode = self._current_removal_mode()
++
++        if removal_mode == "Color Removal":
++            backend_name = "Color Removal"
++            backend_options = self._current_color_removal_options()
++            model_name = "color-removal"
++        else:
++            backend_name = self._current_backend_name()
++            backend_options = self._current_backend_options()
++            model_name = self.settings_panel.model_combo.currentText()
++
+         suffix = self._build_export_suffix()
+         output_format = self.settings_panel.output_format_combo.currentText().upper()
+         background_mode = self.settings_panel.background_mode_combo.currentText()
+@@ -3995,6 +4017,7 @@
+ 
+         self.log(f"Starting full-resolution export for: {item.filename}")
+         self.log(f"Source image: {item.source_path}")
++        self.log(f"Removal mode: {removal_mode}")
+         self.log(f"Backend: {backend_name}")
+         self.log(f"Model: {model_name}")
+         self.log(f"Backend options: {backend_options}")
+@@ -4021,6 +4044,7 @@
+             background_color_name=background_color,
+             backend_name=backend_name,
+             backend_options=backend_options,
++            removal_mode=removal_mode,
+             base_preview_mask_path=base_preview_mask_path,
+             edited_preview_mask_path=edited_preview_mask_path,
+             apply_preview_edits=(

@@ -2,7 +2,8 @@ from pathlib import Path
 
 from PySide6.QtCore import QObject, Signal, Slot
 
-from processing.rembg_engine import RembgEngine
+from processing.backend_factory import create_background_engine
+from processing.color_removal import remove_color_from_file
 from processing.export_utils import (
     build_output_path,
     export_processed_image,
@@ -27,11 +28,14 @@ class FullExportWorker(QObject):
         model_name: str,
         background_mode: str,
         background_color_name: str,
+        backend_name: str = "rembg",
+        backend_options: dict | None = None,
         base_preview_mask_path: Path | None = None,
         edited_preview_mask_path: Path | None = None,
         apply_preview_edits: bool = False,
         skip_background_removal: bool = False,
         overwrite_existing: bool = False,
+        removal_mode: str = "AI Removal",
     ):
         super().__init__()
 
@@ -43,6 +47,8 @@ class FullExportWorker(QObject):
         self.output_format = output_format
         self.suffix = suffix
         self.model_name = model_name
+        self.backend_name = backend_name
+        self.backend_options = backend_options or {}
 
         self.background_mode = background_mode
         self.background_color_name = background_color_name
@@ -52,20 +58,24 @@ class FullExportWorker(QObject):
         self.apply_preview_edits = apply_preview_edits
         self.skip_background_removal = skip_background_removal
         self.overwrite_existing = overwrite_existing
+        self.removal_mode = removal_mode
 
     @Slot()
     def run(self):
         try:
             self.status.emit(f"Full export worker started for item index {self.item_index}")
             self.status.emit(f"Source image: {self.source_path}")
+            self.status.emit(f"Removal mode: {self.removal_mode}")
+            self.status.emit(f"Backend: {self.backend_name}")
             self.status.emit(f"Model: {self.model_name}")
+            self.status.emit(f"Backend options: {self.backend_options}")
             self.status.emit(f"Output format: {self.output_format}")
             self.status.emit(f"Background mode: {self.background_mode}")
             self.status.emit(f"Background color: {self.background_color_name}")
             self.status.emit(f"Full-res cache path: {self.processed_cache_path}")
 
             if self.skip_background_removal:
-                self.status.emit("Skipping AI background removal for export.")
+                self.status.emit("Skipping background removal for export.")
                 self.status.emit("Preparing full-resolution base image from original source.")
 
                 ok, error_message = prepare_base_export_image(
@@ -79,10 +89,29 @@ class FullExportWorker(QObject):
                         error_message or "Preparing base full-resolution export image failed.",
                     )
                     return
+            elif self.removal_mode == "Color Removal":
+                self.status.emit(f"Running full-resolution Color Removal from: {self.source_path}")
+
+                ok, error_message = remove_color_from_file(
+                    input_path=self.source_path,
+                    output_path=self.processed_cache_path,
+                    target_color=self.backend_options.get("target_color", (255, 255, 255)),
+                    threshold=self.backend_options.get("threshold", 30),
+                    match_mode=self.backend_options.get("match_mode", "Connected Edges"),
+                    feather=self.backend_options.get("feather", 0),
+                    reduce_spill=self.backend_options.get("reduce_spill", False),
+                )
+
+                if not ok:
+                    self.error.emit(
+                        self.item_index,
+                        error_message or "Full-resolution Color Removal failed."
+                    )
+                    return
             else:
                 self.status.emit(f"Generating full-resolution cutout from: {self.source_path}")
 
-                engine = RembgEngine()
+                engine = create_background_engine(self.backend_name, self.backend_options)
 
                 ok, error_message = engine.remove_background_fullres(
                     input_path=self.source_path,

@@ -143,14 +143,16 @@ class FilePanel(QFrame):
             "Reset the checked items back to their original state and clear processed/edited working state."
         )
 
-        self.open_output_btn = QPushButton("Open Output Folder")
-        self.open_output_btn.setToolTip(
-            "Open the current output folder. If no output folder is set, open the selected image's source folder."
-        )
+        self.load_watch_folder_btn = QPushButton("Load Watch Folder")
+        self.load_watch_folder_btn.setToolTip("Load the saved watch folder into the file list.")
+
+        self._configure_action_button(self.remove_selected_btn)
+        self._configure_action_button(self.reset_selected_btn)
+        self._configure_action_button(self.load_watch_folder_btn)
 
         action_row_1.addWidget(self.remove_selected_btn)
         action_row_1.addWidget(self.reset_selected_btn)
-        action_row_1.addWidget(self.open_output_btn)
+        action_row_1.addWidget(self.load_watch_folder_btn)
         layout.addLayout(action_row_1)
 
         action_row_2 = QHBoxLayout()
@@ -170,6 +172,10 @@ class FilePanel(QFrame):
         self.clear_all_btn.setToolTip(
             "Remove every loaded item from the file list. This does not delete the original image files from disk."
         )
+
+        self._configure_action_button(self.clear_completed_btn)
+        self._configure_action_button(self.retry_failed_btn)
+        self._configure_action_button(self.clear_all_btn)
 
         action_row_2.addWidget(self.clear_completed_btn)
         action_row_2.addWidget(self.retry_failed_btn)
@@ -192,6 +198,40 @@ class FilePanel(QFrame):
         self._update_view_buttons()
         self._apply_view_mode()
         self._update_counts()
+        self._update_action_button_texts()
+
+    def _configure_action_button(self, button: QPushButton):
+        button.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        button.setMinimumHeight(32)
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        self._update_action_button_texts()
+
+    def _update_action_button_texts(self):
+        panel_width = self.width()
+
+        if panel_width >= 430:
+            self.remove_selected_btn.setText("Remove Selected")
+            self.reset_selected_btn.setText("Reset Selected")
+            self.load_watch_folder_btn.setText("Load Watch Folder")
+            self.clear_completed_btn.setText("Clear All Exported")
+            self.retry_failed_btn.setText("Retry Failed")
+            self.clear_all_btn.setText("Clear All")
+        elif panel_width >= 360:
+            self.remove_selected_btn.setText("Remove")
+            self.reset_selected_btn.setText("Reset")
+            self.load_watch_folder_btn.setText("Load Watch")
+            self.clear_completed_btn.setText("Clear Exported")
+            self.retry_failed_btn.setText("Retry Failed")
+            self.clear_all_btn.setText("Clear All")
+        else:
+            self.remove_selected_btn.setText("Remove")
+            self.reset_selected_btn.setText("Reset")
+            self.load_watch_folder_btn.setText("Watch")
+            self.clear_completed_btn.setText("Exported")
+            self.retry_failed_btn.setText("Retry")
+            self.clear_all_btn.setText("Clear")
 
     def set_type_filter_options(self, file_types: list[str]):
         current = self.type_filter_combo.currentText()

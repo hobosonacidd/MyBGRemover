@@ -7,7 +7,7 @@ import numpy as np
 from PIL import Image
 
 from PySide6.QtCore import Qt, Signal, QPoint, QSize
-from PySide6.QtGui import QPixmap, QPainter, QPen, QColor
+from PySide6.QtGui import QPixmap, QPainter, QPen, QColor, QImage
 from PySide6.QtWidgets import (
     QFrame,
     QVBoxLayout,
@@ -43,14 +43,17 @@ class _CanvasLabel(QLabel):
 
 
 class PreviewCanvas(QFrame):
+    color_picked = Signal(int, int, int)
     image_edited = Signal(str)
     edits_reset = Signal()
+    color_sampled = Signal(str)
 
     def __init__(self):
         super().__init__()
 
         self.setObjectName("previewCanvas")
         self.setFrameShape(QFrame.StyledPanel)
+        self.setMouseTracking(True)
 
         self._current_pixmap = None
         self._base_fit_scale = 1.0
@@ -65,6 +68,7 @@ class PreviewCanvas(QFrame):
 
         self._interaction_mode = "preview"
         self._current_mode = "after"
+        self._color_pick_mode_active = False
 
         self._tool_name = "Erase"
         self._apply_mode = "Brush"
@@ -72,6 +76,8 @@ class PreviewCanvas(QFrame):
         self._brush_size = 40
         self._softness = 35
         self._opacity = 100
+        self._flow = 100
+        self._flow = 100  # percent, behaves like opacity but per-step accumulation
         self._spacing = 20
         self._tolerance = 35
 
@@ -89,6 +95,25 @@ class PreviewCanvas(QFrame):
 
         self._pending_undo_state = None
         self._stroke_changed = False
+
+        self._shift_line_start_point = None
+        self._line_preview_end_point = None
+
+        self._stroke_anchor_point = None
+        self._smoothed_image_point = None
+        self._last_raw_image_point = None
+        self._stabilizer_strength = 0.42
+
+        self._smart_preview_mask = None
+        self._smart_preview_bounds = None
+        self._smart_preview_seed_point = None
+        self._smart_stroke_accum_mask = None
+        self._smart_stroke_base_rgba = None
+        self._smart_expand_pixels = 1
+        self._smart_contract_pixels = 0
+        self._smart_feather = 0
+        self._smart_cleanup_holes = True
+        self._smart_cleanup_speckles = True
 
         self._editable_save_path = None
         self._title_text = "Preview"
@@ -113,6 +138,15 @@ class PreviewCanvas(QFrame):
 
         self.zoom_in_btn = QPushButton("Zoom +")
         self.zoom_out_btn = QPushButton("Zoom -")
+        self._configure_toolbar_button(self.preview_mode_btn)
+        self._configure_toolbar_button(self.edit_mode_btn)
+        self._configure_toolbar_button(self.before_btn)
+        self._configure_toolbar_button(self.after_btn)
+        self._configure_toolbar_button(self.undo_btn)
+        self._configure_toolbar_button(self.redo_btn)
+        self._configure_toolbar_button(self.reset_edits_btn)
+        self._configure_toolbar_button(self.zoom_in_btn)
+        self._configure_toolbar_button(self.zoom_out_btn)
 
         toolbar.addWidget(self.preview_mode_btn)
         toolbar.addWidget(self.edit_mode_btn)
@@ -125,6 +159,8 @@ class PreviewCanvas(QFrame):
         toolbar.addWidget(self.zoom_in_btn)
         toolbar.addWidget(self.zoom_out_btn)
 
+        self.setMouseTracking(True)
+
         self.image_label = _CanvasLabel(self)
         self.image_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.image_label.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
@@ -134,6 +170,8 @@ class PreviewCanvas(QFrame):
 
         self.image_container = QWidget()
         self.image_container.setStyleSheet("background: transparent;")
+        self.image_container.setMouseTracking(True)
+        self.image_container.setMouseTracking(True)
         self.image_container_layout = QVBoxLayout(self.image_container)
         self.image_container_layout.setContentsMargins(0, 0, 0, 0)
         self.image_container_layout.addStretch()
@@ -150,6 +188,10 @@ class PreviewCanvas(QFrame):
         self.scroll_area.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.scroll_area.setStyleSheet("background: transparent; border: 0;")
         self.scroll_area.viewport().setStyleSheet("background: transparent;")
+        self.scroll_area.setMouseTracking(True)
+        self.scroll_area.viewport().setMouseTracking(True)
+        self.scroll_area.setMouseTracking(True)
+        self.scroll_area.viewport().setMouseTracking(True)
 
         layout.addWidget(self.title_label)
         layout.addLayout(toolbar)
@@ -166,9 +208,50 @@ class PreviewCanvas(QFrame):
         self.zoom_out_btn.clicked.connect(self.zoom_out)
 
         self._update_mode_buttons()
+        self._update_responsive_toolbar_texts()
+        
+    def _configure_toolbar_button(self, button: QPushButton):
+        button.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        button.setMinimumHeight(32)
+        button.setMinimumWidth(0)
+
+    def _update_responsive_toolbar_texts(self):
+        panel_width = self.width()
+
+        if panel_width >= 760:
+            self.preview_mode_btn.setText("Preview Mode ✓" if self._interaction_mode == "preview" else "Preview Mode")
+            self.edit_mode_btn.setText("Edit Mode ✓" if self._interaction_mode == "edit" else "Edit Mode")
+            self.before_btn.setText("Before ✓" if self._current_mode == "before" else "Before")
+            self.after_btn.setText("After ✓" if self._current_mode == "after" else "After")
+            self.undo_btn.setText("Undo")
+            self.redo_btn.setText("Redo")
+            self.reset_edits_btn.setText("Reset Edits")
+            self.zoom_in_btn.setText("Zoom +")
+            self.zoom_out_btn.setText("Zoom -")
+        elif panel_width >= 620:
+            self.preview_mode_btn.setText("Preview ✓" if self._interaction_mode == "preview" else "Preview")
+            self.edit_mode_btn.setText("Edit ✓" if self._interaction_mode == "edit" else "Edit")
+            self.before_btn.setText("Before ✓" if self._current_mode == "before" else "Before")
+            self.after_btn.setText("After ✓" if self._current_mode == "after" else "After")
+            self.undo_btn.setText("Undo")
+            self.redo_btn.setText("Redo")
+            self.reset_edits_btn.setText("Reset")
+            self.zoom_in_btn.setText("Zoom +")
+            self.zoom_out_btn.setText("Zoom -")
+        else:
+            self.preview_mode_btn.setText("P ✓" if self._interaction_mode == "preview" else "P")
+            self.edit_mode_btn.setText("E ✓" if self._interaction_mode == "edit" else "E")
+            self.before_btn.setText("B ✓" if self._current_mode == "before" else "B")
+            self.after_btn.setText("A ✓" if self._current_mode == "after" else "A")
+            self.undo_btn.setText("↶")
+            self.redo_btn.setText("↷")
+            self.reset_edits_btn.setText("R")
+            self.zoom_in_btn.setText("+")
+            self.zoom_out_btn.setText("-")
 
     def resizeEvent(self, event):
         super().resizeEvent(event)
+        self._update_responsive_toolbar_texts()
         if self._current_pixmap is not None:
             self._render_current_pixmap()
 
@@ -232,11 +315,19 @@ class PreviewCanvas(QFrame):
         self._last_image_point = None
         self._drag_edit_active = False
         self._hover_image_point = None
+        self._shift_line_start_point = None
+        self._line_preview_end_point = None
+        self._stroke_anchor_point = None
+        self._smoothed_image_point = None
+        self._last_raw_image_point = None
 
         self._undo_stack = []
         self._redo_stack = []
         self._pending_undo_state = None
         self._stroke_changed = False
+        self._clear_smart_selection_preview()
+        self._smart_stroke_accum_mask = None
+        self._smart_stroke_base_rgba = None
 
         self._editable_save_path = None
 
@@ -252,10 +343,22 @@ class PreviewCanvas(QFrame):
     def set_magic_mode(self, mode: str):
         valid_modes = {"Connected Region", "Global Match"}
         self._magic_mode = mode if mode in valid_modes else "Connected Region"
+        self._clear_smart_selection_preview()
         self._render_current_pixmap()
 
     def set_edge_protect_enabled(self, enabled: bool):
         self._edge_protect_enabled = bool(enabled)
+
+    def set_smart_selection_settings(self, feather, expand, fill_holes, remove_speckles):
+        self._smart_feather = max(0, int(feather))
+        expand_value = int(expand)
+
+        self._smart_expand_pixels = max(0, expand_value)
+        self._smart_contract_pixels = abs(min(0, expand_value))
+        self._smart_cleanup_holes = bool(fill_holes)
+        self._smart_cleanup_speckles = bool(remove_speckles)
+
+        self._render_current_pixmap()
 
     def set_tool_settings(
         self,
@@ -264,16 +367,19 @@ class PreviewCanvas(QFrame):
         brush_size,
         softness,
         opacity,
-        spacing,
-        tolerance,
+        flow=100,
+        spacing=20,
+        tolerance=35,
     ):
         self._tool_name = tool_name
         self._apply_mode = apply_mode
-        self._brush_size = brush_size
-        self._softness = softness
-        self._opacity = opacity
-        self._spacing = spacing
-        self._tolerance = tolerance
+        self._brush_size = int(brush_size)
+        self._softness = int(softness)
+        self._opacity = int(opacity)
+        self._flow = max(1, min(100, int(flow)))
+        self._spacing = int(spacing)
+        self._tolerance = int(tolerance)
+        self._clear_smart_selection_preview()
         self._render_current_pixmap()
 
     def set_preview_images(
@@ -303,11 +409,24 @@ class PreviewCanvas(QFrame):
         self._last_image_point = None
         self._drag_edit_active = False
         self._hover_image_point = None
+        self._shift_line_start_point = None
+        self._line_preview_end_point = None
+        self._stroke_anchor_point = None
+        self._smoothed_image_point = None
+        self._last_raw_image_point = None
+        self._clear_smart_selection_preview()
+        self._smart_stroke_accum_mask = None
+        self._smart_stroke_base_rgba = None
+        self._shift_line_start_point = None
+        self._line_preview_end_point = None
+        self._stroke_anchor_point = None
+        self._smoothed_image_point = None
 
         self._undo_stack = []
         self._redo_stack = []
         self._pending_undo_state = None
         self._stroke_changed = False
+        self._clear_smart_selection_preview()
 
         self._title_text = title_text or "Preview"
         self.title_label.setText(self._title_text)
@@ -380,10 +499,48 @@ class PreviewCanvas(QFrame):
 
         self._load_current_mode_pixmap()
         self._update_mode_buttons()
+        
+    def begin_color_pick_mode(self):
+        if self._editable_rgba is None and self._before_image_pil is None:
+            return
+
+        self._color_pick_mode_active = True
+        self._interaction_mode = "preview"
+        self.title_label.setText(f"{self._title_text} — COLOR PICKER: click a pixel in the preview")
+        self.image_label.setCursor(Qt.CursorShape.CrossCursor)
+        self._render_current_pixmap()
+
+    def cancel_color_pick_mode(self):
+        self._color_pick_mode_active = False
+        self.title_label.setText(self._title_text)
+        self.image_label.unsetCursor()
+        self._render_current_pixmap()
+
+    def _sample_color_hex_at_image_point(self, x: int, y: int) -> str | None:
+        source_rgba = None
+
+        if self._current_mode == "before" and self._before_image_pil is not None:
+            source_rgba = np.array(self._before_image_pil.convert("RGBA"))
+        elif self._editable_rgba is not None:
+            source_rgba = self._editable_rgba
+        elif self._before_image_pil is not None:
+            source_rgba = np.array(self._before_image_pil.convert("RGBA"))
+
+        if source_rgba is None:
+            return None
+
+        img_h, img_w = source_rgba.shape[:2]
+        if x < 0 or y < 0 or x >= img_w or y >= img_h:
+            return None
+
+        red, green, blue = source_rgba[y, x, :3]
+        return f"#{int(red):02X}{int(green):02X}{int(blue):02X}"
 
     def set_preview_mode(self):
         self._interaction_mode = "preview"
         self._hover_image_point = None
+        self._line_preview_end_point = None
+        self._clear_smart_selection_preview()
         if self._editable_after_image_pil is not None:
             self._current_mode = "after"
         else:
@@ -396,6 +553,8 @@ class PreviewCanvas(QFrame):
             return
         self._interaction_mode = "edit"
         self._current_mode = "after"
+        self._line_preview_end_point = None
+        self._clear_smart_selection_preview()
         self._load_current_mode_pixmap()
         self._update_mode_buttons()
 
@@ -467,6 +626,7 @@ class PreviewCanvas(QFrame):
 
         self.undo_btn.setEnabled(self._can_undo())
         self.redo_btn.setEnabled(bool(self._redo_stack))
+        self._update_responsive_toolbar_texts()
 
     def _get_current_image(self):
         if self._current_mode == "after":
@@ -525,40 +685,169 @@ class PreviewCanvas(QFrame):
             Qt.TransformationMode.SmoothTransformation,
         )
 
-        if self._interaction_mode == "edit" and self._hover_image_point is not None:
+
+        if self._color_pick_mode_active:
             display_pixmap = QPixmap(scaled_pixmap)
             painter = QPainter(display_pixmap)
+            painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+
+            overlay_pen = QPen(QColor(255, 255, 255, 230))
+            overlay_pen.setWidth(2)
+            painter.setPen(overlay_pen)
+            painter.drawText(12, 24, "COLOR PICKER: click a pixel")
+
+            if self._hover_image_point is not None:
+                hx, hy = self._hover_image_point
+                px = int(round(hx * scaled_width / max(1, pixmap_width)))
+                py = int(round(hy * scaled_height / max(1, pixmap_height)))
+
+                target_pen = QPen(QColor(255, 255, 255, 235))
+                target_pen.setWidth(2)
+                painter.setPen(target_pen)
+                painter.drawEllipse(px - 15, py - 15, 30, 30)
+                painter.drawLine(px - 24, py, px - 7, py)
+                painter.drawLine(px + 7, py, px + 24, py)
+                painter.drawLine(px, py - 24, px, py - 7)
+                painter.drawLine(px, py + 7, px, py + 24)
+
+            painter.end()
+            scaled_pixmap = display_pixmap
+        if self._interaction_mode == "edit":
+            display_pixmap = QPixmap(scaled_pixmap)
+            painter = QPainter(display_pixmap)
+            painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
 
             if self._tool_name == "Restore":
                 color = QColor(80, 210, 120, 220)
+                fill_color = QColor(80, 210, 120, 95)
             elif self._tool_name == "Magic Erase":
                 color = QColor(120, 180, 255, 220)
+                fill_color = QColor(120, 180, 255, 105)
             elif self._tool_name == "Background Erase":
                 color = QColor(255, 170, 80, 220)
+                fill_color = QColor(255, 170, 80, 105)
             else:
                 color = QColor(255, 80, 80, 220)
-
-            pen = QPen(color)
-            pen.setWidth(2)
-            painter.setPen(pen)
-
-            hx, hy = self._hover_image_point
+                fill_color = QColor(255, 80, 80, 95)
 
             if self._editable_rgba is not None:
                 img_h, img_w = self._editable_rgba.shape[:2]
-                if img_w > 0 and img_h > 0:
+
+                if self._apply_mode == "Smart Selection" and img_w > 0 and img_h > 0:
+                    edge_pen = QPen(QColor(255, 255, 255, 220))
+                    edge_pen.setWidth(1)
+
+                    cell_w = max(1, int(round(scaled_width / img_w)))
+                    cell_h = max(1, int(round(scaled_height / img_h)))
+
+                    def draw_overlay_mask(mask_array, bounds):
+                        if mask_array is None or bounds is None or not np.any(mask_array):
+                            return
+
+                        bx0, bx1, by0, by1 = bounds
+
+                        for yy in range(mask_array.shape[0]):
+                            row = mask_array[yy]
+                            xx = 0
+
+                            while xx < row.shape[0]:
+                                if not row[xx]:
+                                    xx += 1
+                                    continue
+
+                                run_start = xx
+                                while xx < row.shape[0] and row[xx]:
+                                    xx += 1
+                                run_end = xx - 1
+
+                                px = int(round((bx0 + run_start) * scaled_width / img_w))
+                                py = int(round((by0 + yy) * scaled_height / img_h))
+                                run_width_px = max(1, int(round((run_end - run_start + 1) * scaled_width / img_w)))
+
+                                painter.fillRect(px, py, run_width_px, cell_h, fill_color)
+
+                        for yy in range(mask_array.shape[0]):
+                            for xx in range(mask_array.shape[1]):
+                                if not mask_array[yy, xx]:
+                                    continue
+
+                                is_edge = False
+                                for nx, ny in ((xx - 1, yy), (xx + 1, yy), (xx, yy - 1), (xx, yy + 1)):
+                                    if nx < 0 or ny < 0 or nx >= mask_array.shape[1] or ny >= mask_array.shape[0]:
+                                        is_edge = True
+                                        break
+                                    if not mask_array[ny, nx]:
+                                        is_edge = True
+                                        break
+
+                                if is_edge:
+                                    px = int(round((bx0 + xx) * scaled_width / img_w))
+                                    py = int(round((by0 + yy) * scaled_height / img_h))
+                                    painter.setPen(edge_pen)
+                                    painter.drawRect(px, py, max(0, cell_w - 1), max(0, cell_h - 1))
+
+                    if self._smart_stroke_accum_mask is not None and np.any(self._smart_stroke_accum_mask):
+                        ys, xs = np.where(self._smart_stroke_accum_mask)
+                        if xs.size > 0 and ys.size > 0:
+                            ax0 = int(xs.min())
+                            ax1 = int(xs.max()) + 1
+                            ay0 = int(ys.min())
+                            ay1 = int(ys.max()) + 1
+                            accum_crop = self._smart_stroke_accum_mask[ay0:ay1, ax0:ax1]
+                            draw_overlay_mask(accum_crop, (ax0, ax1, ay0, ay1))
+
+                    if self._smart_preview_mask is not None and self._smart_preview_bounds is not None:
+                        x0, x1, y0, y1 = self._smart_preview_bounds
+                        preview_mask = self._smart_preview_mask.copy()
+
+                        if self._smart_stroke_accum_mask is not None:
+                            preview_mask &= ~self._smart_stroke_accum_mask[y0:y1, x0:x1]
+
+                        draw_overlay_mask(preview_mask, (x0, x1, y0, y1))
+
+                if self._hover_image_point is not None and img_w > 0 and img_h > 0:
+                    hx, hy = self._hover_image_point
                     px = int(round(hx * scaled_width / img_w))
                     py = int(round(hy * scaled_height / img_h))
-                    radius = max(2, int(round((self._brush_size / 2.0) * final_scale)))
+                    outer_radius = max(2, int(round((self._brush_size / 2.0) * final_scale)))
 
-                    painter.drawEllipse(px - radius, py - radius, radius * 2, radius * 2)
+                    softness_ratio = max(0.0, min(1.0, self._effective_softness_ratio()))
+                    inner_radius = max(1, int(round(outer_radius * (1.0 - softness_ratio))))
+
+                    outer_pen = QPen(color)
+                    outer_pen.setWidth(2)
+                    painter.setPen(outer_pen)
+                    painter.drawEllipse(px - outer_radius, py - outer_radius, outer_radius * 2, outer_radius * 2)
+
+                    inner_pen = QPen(QColor(255, 255, 255, 180))
+                    inner_pen.setWidth(1)
+                    painter.setPen(inner_pen)
+                    painter.drawEllipse(px - inner_radius, py - inner_radius, inner_radius * 2, inner_radius * 2)
 
                     if self._tool_name in ("Magic Erase", "Background Erase"):
-                        small_pen = QPen(QColor(255, 255, 255, 200))
-                        small_pen.setWidth(1)
-                        painter.setPen(small_pen)
+                        cross_pen = QPen(QColor(255, 255, 255, 200))
+                        cross_pen.setWidth(1)
+                        painter.setPen(cross_pen)
                         painter.drawLine(px - 6, py, px + 6, py)
                         painter.drawLine(px, py - 6, px, py + 6)
+
+                    if (
+                        self._shift_line_start_point is not None
+                        and self._line_preview_end_point is not None
+                    ):
+                        sx, sy = self._shift_line_start_point
+                        ex, ey = self._line_preview_end_point
+
+                        start_px = int(round(sx * scaled_width / img_w))
+                        start_py = int(round(sy * scaled_height / img_h))
+                        end_px = int(round(ex * scaled_width / img_w))
+                        end_py = int(round(ey * scaled_height / img_h))
+
+                        line_pen = QPen(QColor(255, 255, 255, 210))
+                        line_pen.setWidth(2)
+                        line_pen.setStyle(Qt.PenStyle.DashLine)
+                        painter.setPen(line_pen)
+                        painter.drawLine(start_px, start_py, end_px, end_py)
 
             painter.end()
             scaled_pixmap = display_pixmap
@@ -567,12 +856,305 @@ class PreviewCanvas(QFrame):
         self.image_label.resize(scaled_pixmap.size())
         self.image_label.show()
         self._update_mode_buttons()
+        
 
-    def handle_mouse_press(self, event):
-        if event.button() != Qt.MouseButton.LeftButton:
+    def _is_color_pick_mode_active(self) -> bool:
+        return bool(
+            getattr(self, "_color_pick_active", False)
+            or getattr(self, "_color_pick_mode", False)
+            or getattr(self, "_color_picker_active", False)
+        )
+
+    def _finish_color_pick_mode(self):
+        """Leave preview color-picking mode and remove the crosshair overlay."""
+        if hasattr(self, "_color_pick_active"):
+            self._color_pick_active = False
+        if hasattr(self, "_color_pick_mode"):
+            self._color_pick_mode = False
+        if hasattr(self, "_color_picker_active"):
+            self._color_picker_active = False
+
+        self._hover_image_point = None
+        self._line_preview_end_point = None
+        self._clear_smart_selection_preview()
+
+        try:
+            self.unsetCursor()
+            self.image_label.unsetCursor()
+            self.scroll_area.viewport().unsetCursor()
+        except Exception:
+            pass
+
+        self.title_label.setText(self._title_text)
+
+        if self._current_pixmap is not None:
+            self._render_current_pixmap()
+
+
+    def _is_color_pick_mode_active(self) -> bool:
+        return bool(
+            getattr(self, "_color_pick_active", False)
+            or getattr(self, "_color_pick_mode", False)
+            or getattr(self, "_color_picker_active", False)
+        )
+
+
+    def _finish_color_pick_mode(self):
+        """Leave color-picking mode and remove the crosshair overlay."""
+        if hasattr(self, "_color_pick_active"):
+            self._color_pick_active = False
+        if hasattr(self, "_color_pick_mode"):
+            self._color_pick_mode = False
+        if hasattr(self, "_color_picker_active"):
+            self._color_picker_active = False
+
+        self._hover_image_point = None
+        self._line_preview_end_point = None
+        self._clear_smart_selection_preview()
+
+        try:
+            self.unsetCursor()
+            self.image_label.unsetCursor()
+            self.scroll_area.viewport().unsetCursor()
+        except Exception:
+            pass
+
+        self.title_label.setText(self._title_text)
+
+        if self._current_pixmap is not None:
+            self._render_current_pixmap()
+
+
+    def begin_color_pick_mode(self):
+        """Start one-click color picking from the preview image."""
+        if not hasattr(self, "color_picked"):
             return
 
-        if self._interaction_mode != "edit":
+        if self._editable_rgba is None and self._before_image_pil is None:
+            return
+
+        self._color_pick_active = True
+        self._color_pick_mode = True
+        self._color_picker_active = True
+
+        self._hover_image_point = None
+        self._line_preview_end_point = None
+        self._clear_smart_selection_preview()
+        self.title_label.setText(self._title_text)
+
+        try:
+            self.setCursor(Qt.CursorShape.CrossCursor)
+            self.image_label.setCursor(Qt.CursorShape.CrossCursor)
+            self.scroll_area.viewport().setCursor(Qt.CursorShape.CrossCursor)
+        except Exception:
+            pass
+
+        if self._editable_after_image_pil is not None:
+            self._current_mode = "after"
+        elif self._before_image_pil is not None:
+            self._current_mode = "before"
+
+        self._load_current_mode_pixmap()
+
+
+    def _is_color_pick_mode_active(self) -> bool:
+        return bool(getattr(self, "_color_pick_active", False))
+
+
+    def _finish_color_pick_mode(self):
+        self._color_pick_active = False
+        self._hover_image_point = None
+        self._line_preview_end_point = None
+        self._clear_smart_selection_preview()
+
+        try:
+            self.unsetCursor()
+            self.image_label.unsetCursor()
+            self.scroll_area.viewport().unsetCursor()
+        except Exception:
+            pass
+
+        self.title_label.setText(self._title_text)
+
+        if self._current_pixmap is not None:
+            self._render_current_pixmap()
+
+
+    def begin_color_pick_mode(self):
+        if self._editable_rgba is None and self._before_image_pil is None:
+            return
+
+        self._color_pick_active = True
+        self._hover_image_point = None
+        self._line_preview_end_point = None
+        self._clear_smart_selection_preview()
+        self.title_label.setText(self._title_text)
+
+        try:
+            self.setCursor(Qt.CursorShape.CrossCursor)
+            self.image_label.setCursor(Qt.CursorShape.CrossCursor)
+            self.scroll_area.viewport().setCursor(Qt.CursorShape.CrossCursor)
+        except Exception:
+            pass
+
+        if self._editable_after_image_pil is not None:
+            self._current_mode = "after"
+        elif self._before_image_pil is not None:
+            self._current_mode = "before"
+
+        self._load_current_mode_pixmap()
+
+
+    def _is_color_pick_mode_active(self) -> bool:
+        return bool(getattr(self, "_color_pick_active", False))
+
+
+    def _finish_color_pick_mode(self):
+        self._color_pick_active = False
+        self._hover_image_point = None
+        self._line_preview_end_point = None
+        self._clear_smart_selection_preview()
+
+        try:
+            self.unsetCursor()
+            self.image_label.unsetCursor()
+            self.scroll_area.viewport().unsetCursor()
+        except Exception:
+            pass
+
+        self.title_label.setText(self._title_text)
+
+        if self._current_pixmap is not None:
+            self._render_current_pixmap()
+
+
+    def begin_color_pick_mode(self):
+        if self._editable_rgba is None and self._before_image_pil is None:
+            return
+
+        self._color_pick_active = True
+        self._hover_image_point = None
+        self._line_preview_end_point = None
+        self._clear_smart_selection_preview()
+        self.title_label.setText(self._title_text)
+
+        try:
+            self.setCursor(Qt.CursorShape.CrossCursor)
+            self.image_label.setCursor(Qt.CursorShape.CrossCursor)
+            self.scroll_area.viewport().setCursor(Qt.CursorShape.CrossCursor)
+        except Exception:
+            pass
+
+        if self._editable_after_image_pil is not None:
+            self._current_mode = "after"
+        elif self._before_image_pil is not None:
+            self._current_mode = "before"
+
+        self._load_current_mode_pixmap()
+
+
+    def _is_color_pick_mode_active(self) -> bool:
+        return bool(getattr(self, "_color_pick_active", False))
+
+
+    def _finish_color_pick_mode(self):
+        self._color_pick_active = False
+        self._hover_image_point = None
+        self._line_preview_end_point = None
+        self._clear_smart_selection_preview()
+
+        try:
+            self.unsetCursor()
+            self.image_label.unsetCursor()
+            self.scroll_area.viewport().unsetCursor()
+        except Exception:
+            pass
+
+        self.title_label.setText(self._title_text)
+
+        if self._current_pixmap is not None:
+            self._render_current_pixmap()
+
+
+    def begin_color_pick_mode(self):
+        if self._editable_rgba is None and self._before_image_pil is None:
+            return
+
+        self._color_pick_active = True
+        self._hover_image_point = None
+        self._line_preview_end_point = None
+        self._clear_smart_selection_preview()
+        self.title_label.setText(self._title_text)
+
+        try:
+            self.setCursor(Qt.CursorShape.CrossCursor)
+            self.image_label.setCursor(Qt.CursorShape.CrossCursor)
+            self.scroll_area.viewport().setCursor(Qt.CursorShape.CrossCursor)
+        except Exception:
+            pass
+
+        if self._editable_after_image_pil is not None:
+            self._current_mode = "after"
+        elif self._before_image_pil is not None:
+            self._current_mode = "before"
+
+        self._load_current_mode_pixmap()
+
+    def handle_mouse_press(self, event):
+        # COLOR_PICK_REPAIR_BRANCH
+        if self._is_color_pick_mode_active():
+            if event.button() != Qt.MouseButton.LeftButton:
+                self._finish_color_pick_mode()
+                return
+
+            pos = event.position().toPoint()
+            image_pos = self._widget_pos_to_image_pos(pos)
+
+            if image_pos is None:
+                self._finish_color_pick_mode()
+                return
+
+            x, y = image_pos
+            sample_rgba = self._editable_rgba
+            if sample_rgba is None and self._before_image_pil is not None:
+                sample_rgba = np.array(self._before_image_pil.convert("RGBA"))
+
+            if sample_rgba is not None:
+                r, g, b = sample_rgba[y, x, :3].astype(int).tolist()
+                self.color_picked.emit(int(r), int(g), int(b))
+
+            self._finish_color_pick_mode()
+            return
+        # END_COLOR_PICK_REPAIR_BRANCH
+
+
+
+        if self._is_color_pick_mode_active():
+            if event.button() != Qt.MouseButton.LeftButton:
+                self._finish_color_pick_mode()
+                return
+
+            pos = event.position().toPoint()
+            image_pos = self._widget_pos_to_image_pos(pos)
+
+            if image_pos is None:
+                self._finish_color_pick_mode()
+                return
+
+            x, y = image_pos
+            sample_rgba = self._editable_rgba
+            if sample_rgba is None and self._before_image_pil is not None:
+                sample_rgba = np.array(self._before_image_pil.convert("RGBA"))
+
+            if sample_rgba is not None:
+                r, g, b = sample_rgba[y, x, :3].astype(int).tolist()
+                if hasattr(self, "color_picked"):
+                    self.color_picked.emit(int(r), int(g), int(b))
+
+            self._finish_color_pick_mode()
+            return
+
+        if event.button() != Qt.MouseButton.LeftButton:
             return
 
         if self._editable_rgba is None:
@@ -587,11 +1169,64 @@ class PreviewCanvas(QFrame):
         x, y = image_pos
         self._hover_image_point = (x, y)
 
+        if self._color_pick_mode_active:
+            color_hex = self._sample_color_hex_at_image_point(x, y)
+            self._color_pick_mode_active = False
+            self.title_label.setText(self._title_text)
+            if color_hex:
+                self.color_sampled.emit(color_hex)
+            return
+
+        if self._interaction_mode != "edit":
+            return
+
+        shift_pressed = self._is_shift_pressed(event)
+
+        if (
+            shift_pressed
+            and self._apply_mode == "Brush"
+            and self._shift_line_start_point is not None
+        ):
+            self._line_preview_end_point = (x, y)
+            changed = self._commit_line_stroke(self._shift_line_start_point, (x, y))
+            self._shift_line_start_point = (x, y)
+            self._line_preview_end_point = None
+            self._render_current_pixmap()
+            return
+
         self._mouse_down = True
         self._last_image_point = (x, y)
+        self._stroke_anchor_point = (x, y)
+        self._smoothed_image_point = (float(x), float(y))
+        self._last_raw_image_point = (x, y)
         self._drag_edit_active = False
         self._stroke_changed = False
         self._pending_undo_state = self._editable_rgba.copy()
+        if self._apply_mode == "Smart Selection":
+            img_h, img_w = self._editable_rgba.shape[:2]
+            self._smart_stroke_accum_mask = np.zeros((img_h, img_w), dtype=bool)
+            self._smart_stroke_base_rgba = self._editable_rgba.copy()
+        self._line_preview_end_point = None
+
+        if self._apply_mode == "Smart Selection" and self._tool_name in ("Erase", "Restore", "Magic Erase", "Background Erase"):
+            changed = self._accumulate_smart_selection_at_point(x, y)
+
+            if not changed:
+                self._mouse_down = False
+                self._last_image_point = None
+                self._drag_edit_active = False
+                self._pending_undo_state = None
+                self._smart_stroke_accum_mask = None
+                self._smart_stroke_base_rgba = None
+                self._render_current_pixmap()
+                return
+
+            self._stroke_changed = True
+            self._drag_edit_active = True
+            self._last_image_point = (x, y)
+            self._shift_line_start_point = (x, y)
+            self._render_current_pixmap()
+            return
 
         changed = self._apply_tool_at_point(x, y)
 
@@ -604,16 +1239,6 @@ class PreviewCanvas(QFrame):
             self._render_current_pixmap()
             return
 
-        if self._apply_mode == "Smart Selection":
-            if self._stroke_changed and self._pending_undo_state is not None:
-                self._push_undo_state(self._pending_undo_state)
-            self._pending_undo_state = None
-            self._stroke_changed = False
-            self._mouse_down = False
-            self._last_image_point = None
-            self._drag_edit_active = False
-            self._save_history_snapshot()
-
     def handle_mouse_move(self, event):
         pos = event.position().toPoint()
         image_pos = self._widget_pos_to_image_pos(pos)
@@ -622,6 +1247,29 @@ class PreviewCanvas(QFrame):
             self._hover_image_point = image_pos
         else:
             self._hover_image_point = None
+
+        if self._color_pick_mode_active:
+            self._render_current_pixmap()
+            return
+
+        if self._interaction_mode == "edit" and self._apply_mode == "Smart Selection":
+            if image_pos is not None and self._tool_name in ("Erase", "Restore", "Magic Erase", "Background Erase"):
+                x, y = image_pos
+                self._build_live_smart_selection_preview(x, y)
+            else:
+                self._clear_smart_selection_preview()
+
+        if (
+            self._interaction_mode == "edit"
+            and image_pos is not None
+            and self._apply_mode == "Brush"
+            and self._shift_line_start_point is not None
+            and self._is_shift_pressed(event)
+            and not self._mouse_down
+        ):
+            self._line_preview_end_point = image_pos
+        else:
+            self._line_preview_end_point = None
 
         if self._interaction_mode == "edit":
             self._render_current_pixmap()
@@ -635,14 +1283,33 @@ class PreviewCanvas(QFrame):
         if self._editable_rgba is None:
             return
 
-        if self._apply_mode != "Brush":
-            return
-
         if image_pos is None:
             return
 
-        x, y = image_pos
-        current_point = (x, y)
+        if self._apply_mode == "Smart Selection":
+            if self._tool_name not in ("Erase", "Restore", "Magic Erase", "Background Erase"):
+                return
+
+            if self._last_image_point is None:
+                self._last_image_point = image_pos
+                return
+
+            last_x, last_y = self._last_image_point
+            cur_x, cur_y = image_pos
+            move_distance = math.hypot(cur_x - last_x, cur_y - last_y)
+
+            if move_distance >= max(6.0, self._brush_size * 0.30):
+                if self._accumulate_smart_selection_at_point(cur_x, cur_y):
+                    self._stroke_changed = True
+                    self._drag_edit_active = True
+                    self._last_image_point = (cur_x, cur_y)
+                    self._render_current_pixmap()
+            return
+
+        if self._apply_mode != "Brush":
+            return
+
+        current_point = self._smooth_drag_point(image_pos)
 
         if self._last_image_point is None:
             self._last_image_point = current_point
@@ -657,21 +1324,63 @@ class PreviewCanvas(QFrame):
         self._last_image_point = current_point
 
     def handle_mouse_release(self, event):
-        if self._apply_mode == "Brush" and self._stroke_changed and self._pending_undo_state is not None:
+        if self._apply_mode == "Smart Selection" and self._editable_rgba is not None and self._stroke_changed:
+            self._apply_accumulated_smart_selection_stroke()
+
+        if self._apply_mode in ("Brush", "Smart Selection") and self._stroke_changed and self._pending_undo_state is not None:
             self._push_undo_state(self._pending_undo_state)
+
+        if self._apply_mode == "Brush" and self._last_image_point is not None:
+            self._shift_line_start_point = self._last_image_point
+
+        if self._apply_mode == "Brush" and self._editable_rgba is not None and self._stroke_changed:
+            self._sync_pil_from_rgba()
+            self._save_edited_preview()
+            self._current_mode = "after"
+            self._load_current_mode_pixmap()
+            self._save_history_snapshot()
+
+        if self._apply_mode == "Smart Selection" and self._editable_rgba is not None and self._stroke_changed:
+            self._sync_pil_from_rgba()
+            self._save_edited_preview()
+            self._current_mode = "after"
+            self._load_current_mode_pixmap()
+            self._save_history_snapshot()
 
         self._pending_undo_state = None
         self._stroke_changed = False
+        self._smart_stroke_accum_mask = None
+        self._smart_stroke_base_rgba = None
         self._mouse_down = False
         self._last_image_point = None
         self._drag_edit_active = False
+        self._stroke_anchor_point = None
+        self._smoothed_image_point = None
+        self._last_raw_image_point = None
+        self._line_preview_end_point = None
         self._save_history_snapshot()
 
     def handle_mouse_leave(self, event):
+        # COLOR_PICK_REPAIR_LEAVE
+        if self._is_color_pick_mode_active():
+            self._finish_color_pick_mode()
+            return
+        # END_COLOR_PICK_REPAIR_LEAVE
+
+
+
+        if self._is_color_pick_mode_active():
+            self._finish_color_pick_mode()
+            return
+
         self._hover_image_point = None
+        self._line_preview_end_point = None
+        self._clear_smart_selection_preview()
+        if not self._mouse_down:
+            self._smart_stroke_accum_mask = None
+            self._smart_stroke_base_rgba = None
         if self._interaction_mode == "edit":
             self._render_current_pixmap()
-
     def _widget_pos_to_image_pos(self, pos: QPoint):
         pixmap = self.image_label.pixmap()
 
@@ -696,6 +1405,454 @@ class PreviewCanvas(QFrame):
             return None
 
         return img_x, img_y
+        
+    def _clear_smart_selection_preview(self):
+        self._smart_preview_mask = None
+        self._smart_preview_bounds = None
+        self._smart_preview_seed_point = None
+
+    def _dilate_binary_mask(self, mask: np.ndarray, pixels: int) -> np.ndarray:
+        if pixels <= 0:
+            return mask.copy()
+
+        result = mask.astype(bool).copy()
+        for _ in range(pixels):
+            padded = np.pad(result, 1, mode="constant", constant_values=False)
+            grown = np.zeros_like(result, dtype=bool)
+
+            for dy in range(3):
+                for dx in range(3):
+                    grown |= padded[dy:dy + result.shape[0], dx:dx + result.shape[1]]
+
+            result = grown
+
+        return result
+
+    def _erode_binary_mask(self, mask: np.ndarray, pixels: int) -> np.ndarray:
+        if pixels <= 0:
+            return mask.copy()
+
+        result = mask.astype(bool).copy()
+        for _ in range(pixels):
+            padded = np.pad(result, 1, mode="constant", constant_values=False)
+            shrunk = np.ones_like(result, dtype=bool)
+
+            for dy in range(3):
+                for dx in range(3):
+                    shrunk &= padded[dy:dy + result.shape[0], dx:dx + result.shape[1]]
+
+            result = shrunk
+
+        return result
+
+    def _fill_small_holes(self, mask: np.ndarray, max_hole_area: int = 64) -> np.ndarray:
+        work = mask.astype(bool).copy()
+        inv = ~work
+        h, w = inv.shape
+        visited = np.zeros((h, w), dtype=bool)
+
+        for sy in range(h):
+            for sx in range(w):
+                if visited[sy, sx] or not inv[sy, sx]:
+                    continue
+
+                q = deque()
+                q.append((sx, sy))
+                visited[sy, sx] = True
+                region = []
+                touches_edge = False
+
+                while q:
+                    cx, cy = q.popleft()
+                    region.append((cx, cy))
+
+                    if cx == 0 or cy == 0 or cx == w - 1 or cy == h - 1:
+                        touches_edge = True
+
+                    for nx, ny in ((cx - 1, cy), (cx + 1, cy), (cx, cy - 1), (cx, cy + 1)):
+                        if 0 <= nx < w and 0 <= ny < h and not visited[ny, nx] and inv[ny, nx]:
+                            visited[ny, nx] = True
+                            q.append((nx, ny))
+
+                if not touches_edge and len(region) <= max_hole_area:
+                    for rx, ry in region:
+                        work[ry, rx] = True
+
+        return work
+
+    def _remove_small_islands(self, mask: np.ndarray, max_island_area: int = 40) -> np.ndarray:
+        work = mask.astype(bool).copy()
+        h, w = work.shape
+        visited = np.zeros((h, w), dtype=bool)
+
+        for sy in range(h):
+            for sx in range(w):
+                if visited[sy, sx] or not work[sy, sx]:
+                    continue
+
+                q = deque()
+                q.append((sx, sy))
+                visited[sy, sx] = True
+                region = []
+
+                while q:
+                    cx, cy = q.popleft()
+                    region.append((cx, cy))
+
+                    for nx, ny in ((cx - 1, cy), (cx + 1, cy), (cx, cy - 1), (cx, cy + 1)):
+                        if 0 <= nx < w and 0 <= ny < h and not visited[ny, nx] and work[ny, nx]:
+                            visited[ny, nx] = True
+                            q.append((nx, ny))
+
+                if len(region) <= max_island_area:
+                    for rx, ry in region:
+                        work[ry, rx] = False
+
+        return work
+
+    def _postprocess_smart_selection_mask(self, mask: np.ndarray) -> np.ndarray:
+        result = mask.astype(bool)
+
+        if self._smart_expand_pixels > 0:
+            result = self._dilate_binary_mask(result, self._smart_expand_pixels)
+
+        if self._smart_contract_pixels > 0:
+            result = self._erode_binary_mask(result, self._smart_contract_pixels)
+
+        if self._smart_cleanup_holes:
+            result = self._fill_small_holes(result, max_hole_area=64)
+
+        if self._smart_cleanup_speckles:
+            result = self._remove_small_islands(result, max_island_area=40)
+
+        return result
+        
+    def _smart_selection_weight_mask(self, mask: np.ndarray) -> np.ndarray:
+        hard_mask = mask.astype(bool)
+
+        if self._smart_feather <= 0:
+            return hard_mask.astype(np.float32)
+
+        feather_pixels = max(1, int(self._smart_feather))
+        weights = hard_mask.astype(np.float32)
+
+        current = hard_mask.copy()
+
+        for step in range(feather_pixels):
+            eroded = self._erode_binary_mask(current, 1)
+            edge_ring = current & (~eroded)
+
+            ring_strength = max(
+                0.20,
+                (step + 1) / float(feather_pixels + 1),
+            )
+
+            weights[edge_ring] = np.minimum(weights[edge_ring], ring_strength)
+            current = eroded
+
+            if not np.any(current):
+                break
+
+        return np.clip(weights, 0.0, 1.0)
+        
+    def _build_live_smart_selection_preview(self, x: int, y: int):
+        if self._editable_rgba is None:
+            self._clear_smart_selection_preview()
+            return
+
+        bounds = self._get_match_bounds(x, y)
+        if bounds is None:
+            self._clear_smart_selection_preview()
+            return
+
+        x0, x1, y0, y1 = bounds
+        rgba_region = self._editable_rgba[y0:y1, x0:x1]
+        alpha_region = rgba_region[:, :, 3].astype(np.float32)
+
+        local_x = x - x0
+        local_y = y - y0
+
+        if not (0 <= local_x < (x1 - x0) and 0 <= local_y < (y1 - y0)):
+            self._clear_smart_selection_preview()
+            return
+
+        if self._tool_name == "Restore":
+            match_mask = self._restore_tolerance_mask_local(x, y, bounds)
+            if match_mask is None:
+                self._clear_smart_selection_preview()
+                return
+
+        else:
+            rgb_region = rgba_region[:, :, :3].astype(np.float32)
+            local_seed = self._sample_seed_color(x, y, rgba_region=rgba_region, origin=(x0, y0))
+            distance = self._compute_color_distance(local_seed, rgb_region=rgb_region)
+
+            tolerance_mask = self._adaptive_tolerance_mask_local(x, y, bounds)
+            if tolerance_mask is None:
+                self._clear_smart_selection_preview()
+                return
+
+            match_mask = tolerance_mask.copy()
+
+            if self._tool_name == "Background Erase":
+                tolerance_value = float(self._tolerance)
+                tolerance_boost = np.clip((255.0 - alpha_region) / 255.0, 0.0, 1.0) * 24.0
+                match_mask = distance <= (tolerance_value + tolerance_boost)
+
+        if self._magic_mode == "Connected Region":
+            connected = np.zeros_like(match_mask, dtype=bool)
+            if match_mask[local_y, local_x]:
+                q = deque()
+                q.append((local_x, local_y))
+                connected[local_y, local_x] = True
+
+                while q:
+                    cx, cy = q.popleft()
+                    for nx, ny in ((cx - 1, cy), (cx + 1, cy), (cx, cy - 1), (cx, cy + 1)):
+                        if 0 <= nx < match_mask.shape[1] and 0 <= ny < match_mask.shape[0]:
+                            if match_mask[ny, nx] and not connected[ny, nx]:
+                                connected[ny, nx] = True
+                                q.append((nx, ny))
+            preview_mask = connected
+        else:
+            preview_mask = match_mask
+
+        preview_mask = self._postprocess_smart_selection_mask(preview_mask)
+
+        if self._tool_name == "Restore":
+            preview_mask &= (alpha_region < 250.0)
+
+        self._smart_preview_mask = preview_mask
+        self._smart_preview_bounds = bounds
+        self._smart_preview_seed_point = (x, y)
+
+    def _commit_live_smart_selection(self) -> bool:
+        if self._editable_rgba is None:
+            return False
+
+        if self._smart_preview_mask is None or self._smart_preview_bounds is None:
+            return False
+
+        x0, x1, y0, y1 = self._smart_preview_bounds
+        target = self._editable_rgba[y0:y1, x0:x1].copy()
+        before = target.copy()
+
+        local_mask_bool = self._smart_preview_mask.astype(bool)
+
+        if not np.any(local_mask_bool):
+            self._clear_smart_selection_preview()
+            return False
+
+        if self._smart_stroke_accum_mask is None:
+            img_h, img_w = self._editable_rgba.shape[:2]
+            self._smart_stroke_accum_mask = np.zeros((img_h, img_w), dtype=bool)
+
+        already_done = self._smart_stroke_accum_mask[y0:y1, x0:x1]
+        fresh_mask_bool = local_mask_bool & (~already_done)
+
+        if not np.any(fresh_mask_bool):
+            self._clear_smart_selection_preview()
+            return False
+
+        mask = fresh_mask_bool.astype(np.float32)
+        alpha_strength = max(0.0, min(1.0, self._opacity / 100.0))
+
+        if self._tool_name in ("Erase", "Magic Erase", "Background Erase"):
+            effective_mask = mask.copy()
+
+            if self._edge_protect_enabled:
+                full_rgb = self._editable_rgba[:, :, :3]
+                full_alpha = self._editable_rgba[:, :, 3]
+                full_protection = self._edge_protect_mask(full_rgb, full_alpha)
+                protection = full_protection[y0:y1, x0:x1]
+
+                local_alpha = target[:, :, 3].astype(np.float32)
+                protected_alpha = local_alpha / 255.0
+                dense_subject = protected_alpha >= 0.55
+                strong_protection = np.where(dense_subject, protection * 0.45, protection)
+
+                effective_mask *= strong_protection
+
+            target[:, :, 3] = np.clip(
+                target[:, :, 3].astype(np.float32) * (1.0 - effective_mask * alpha_strength),
+                0,
+                255,
+            ).astype(np.uint8)
+
+        elif self._tool_name == "Restore":
+            if self._restore_source_rgba is None:
+                self._clear_smart_selection_preview()
+                return False
+
+            restore_region = self._restore_source_rgba[y0:y1, x0:x1].astype(np.float32)
+            target_float = target.astype(np.float32)
+            effective_mask = (mask * alpha_strength)[..., np.newaxis]
+
+            blended = target_float + ((restore_region - target_float) * effective_mask)
+            target = np.clip(blended, 0, 255).astype(np.uint8)
+
+        changed = not np.array_equal(before, target)
+
+        if changed:
+            self._editable_rgba[y0:y1, x0:x1] = target
+            self._smart_stroke_accum_mask[y0:y1, x0:x1] |= fresh_mask_bool
+
+        self._clear_smart_selection_preview()
+        return changed
+        
+    def _accumulate_smart_selection_at_point(self, x: int, y: int) -> bool:
+        if self._editable_rgba is None:
+            return False
+
+        self._build_live_smart_selection_preview(x, y)
+
+        if self._smart_preview_mask is None or self._smart_preview_bounds is None:
+            return False
+
+        if self._smart_stroke_accum_mask is None:
+            img_h, img_w = self._editable_rgba.shape[:2]
+            self._smart_stroke_accum_mask = np.zeros((img_h, img_w), dtype=bool)
+
+        x0, x1, y0, y1 = self._smart_preview_bounds
+        local_mask = self._smart_preview_mask.astype(bool)
+
+        if not np.any(local_mask):
+            return False
+
+        existing_mask = self._smart_stroke_accum_mask[y0:y1, x0:x1].copy()
+        fresh_mask = local_mask & (~existing_mask)
+        self._smart_stroke_accum_mask[y0:y1, x0:x1] |= local_mask
+
+        return np.any(fresh_mask)
+
+    def _apply_accumulated_smart_selection_stroke(self) -> bool:
+        if self._editable_rgba is None or self._smart_stroke_accum_mask is None:
+            return False
+
+        if not np.any(self._smart_stroke_accum_mask):
+            return False
+
+        base_rgba = (
+            self._smart_stroke_base_rgba.copy()
+            if self._smart_stroke_base_rgba is not None
+            else self._editable_rgba.copy()
+        )
+
+        result = base_rgba.copy()
+        mask = self._smart_selection_weight_mask(self._smart_stroke_accum_mask)
+        alpha_strength = max(0.0, min(1.0, self._opacity / 100.0))
+
+        if self._tool_name in ("Erase", "Magic Erase", "Background Erase"):
+            effective_strength = mask * alpha_strength
+
+            if self._edge_protect_enabled:
+                if self._restore_source_rgba is not None:
+                    protection_rgb = self._restore_source_rgba[:, :, :3]
+                    protection_alpha = self._restore_source_rgba[:, :, 3]
+                else:
+                    protection_rgb = base_rgba[:, :, :3]
+                    protection_alpha = base_rgba[:, :, 3]
+
+                protection = self._edge_protect_mask(protection_rgb, protection_alpha)
+
+                protected_alpha = protection_alpha.astype(np.float32) / 255.0
+                dense_subject = protected_alpha >= 0.55
+
+                strong_edge_zone = protection < 0.70
+                medium_edge_zone = (protection >= 0.70) & (protection < 0.85)
+
+                if np.any(medium_edge_zone):
+                    effective_strength[medium_edge_zone] *= 0.92
+
+                if np.any(strong_edge_zone):
+                    strong_scale = np.where(dense_subject, 0.35, 0.55).astype(np.float32)
+                    effective_strength[strong_edge_zone] *= strong_scale[strong_edge_zone]
+
+            result[:, :, 3] = np.clip(
+                base_rgba[:, :, 3].astype(np.float32) * (1.0 - effective_strength),
+                0,
+                255,
+            ).astype(np.uint8)
+
+        elif self._tool_name == "Restore":
+            if self._restore_source_rgba is None:
+                return False
+
+            base_float = base_rgba.astype(np.float32)
+            restore_float = self._restore_source_rgba.astype(np.float32)
+            effective_mask = (mask * alpha_strength)[..., np.newaxis]
+
+            blended = base_float + ((restore_float - base_float) * effective_mask)
+            result = np.clip(blended, 0, 255).astype(np.uint8)
+
+        changed = not np.array_equal(self._editable_rgba, result)
+
+        if changed:
+            self._editable_rgba = result
+
+        return changed
+        
+    def _is_shift_pressed(self, event) -> bool:
+        return bool(event.modifiers() & Qt.KeyboardModifier.ShiftModifier)
+
+    def _smooth_drag_point(self, target_point: tuple[int, int]) -> tuple[int, int]:
+        if self._smoothed_image_point is None:
+            self._smoothed_image_point = (
+                float(target_point[0]),
+                float(target_point[1]),
+            )
+            self._last_raw_image_point = target_point
+            return target_point
+
+        current_x, current_y = self._smoothed_image_point
+        target_x, target_y = target_point
+
+        if self._last_raw_image_point is None:
+            raw_distance = 0.0
+        else:
+            raw_distance = math.hypot(
+                target_x - self._last_raw_image_point[0],
+                target_y - self._last_raw_image_point[1],
+            )
+
+        self._last_raw_image_point = target_point
+
+        radius = max(1.0, self._brush_size / 2.0)
+
+        if raw_distance <= radius * 0.08:
+            blend = 0.55
+        elif raw_distance <= radius * 0.22:
+            blend = 0.42
+        else:
+            blend = 0.25
+
+        if self._tool_name in ("Magic Erase", "Background Erase"):
+            blend = min(0.50, blend + 0.08)
+
+        smoothed_x = current_x + (target_x - current_x) * (1.0 - blend)
+        smoothed_y = current_y + (target_y - current_y) * (1.0 - blend)
+
+        self._smoothed_image_point = (smoothed_x, smoothed_y)
+        return int(round(smoothed_x)), int(round(smoothed_y))
+
+    def _commit_line_stroke(self, start_point: tuple[int, int], end_point: tuple[int, int]) -> bool:
+        if self._editable_rgba is None:
+            return False
+
+        self._pending_undo_state = self._editable_rgba.copy()
+        changed = self._apply_stroke_between_points(start_point, end_point)
+
+        if changed and self._pending_undo_state is not None:
+            self._push_undo_state(self._pending_undo_state)
+
+        self._pending_undo_state = None
+        self._stroke_changed = False
+        self._drag_edit_active = False
+        self._sync_pil_from_rgba()
+        self._save_edited_preview()
+        self._current_mode = "after"
+        self._load_current_mode_pixmap()
+        return changed
 
     def _apply_tool_at_point(self, x: int, y: int) -> bool:
         if self._tool_name == "Erase":
@@ -719,11 +1876,16 @@ class PreviewCanvas(QFrame):
         radius = max(1.0, self._brush_size / 2.0)
         spacing_ratio = max(0.01, self._spacing / 100.0)
 
-        if self._tool_name in ("Magic Erase", "Background Erase"):
-            step_distance = max(0.5, radius * spacing_ratio * 0.35)
-        else:
-            step_distance = max(1.0, radius * spacing_ratio)
+        speed_factor = min(1.0, distance / max(1.0, radius * 2.0))
 
+        if self._tool_name in ("Magic Erase", "Background Erase"):
+            base_step = radius * spacing_ratio * 0.28
+            dynamic_step = base_step * (1.0 + speed_factor * 0.35)
+            step_distance = max(0.75, dynamic_step)
+        else:
+            base_step = radius * spacing_ratio
+            dynamic_step = base_step * (1.0 + speed_factor * 0.25)
+            step_distance = max(0.75, dynamic_step)
         if distance == 0:
             return self._apply_tool_at_point(x1, y1)
 
@@ -743,7 +1905,7 @@ class PreviewCanvas(QFrame):
         softness_ratio = max(0.0, min(1.0, self._softness / 100.0))
 
         if self._tool_name in ("Magic Erase", "Background Erase") and self._apply_mode == "Brush":
-            return max(softness_ratio, 0.72)
+            return max(softness_ratio, 0.12)
 
         return softness_ratio
 
@@ -769,7 +1931,13 @@ class PreviewCanvas(QFrame):
 
         feather_mask = (distance > inner_radius) & (distance <= radius)
         feather_width = max(1e-6, radius - inner_radius)
-        weights[feather_mask] = 1.0 - ((distance[feather_mask] - inner_radius) / feather_width)
+
+        t = (distance[feather_mask] - inner_radius) / feather_width
+
+        # hardness curve (smoothstep-like)
+        t = t * t * (3.0 - 2.0 * t)
+
+        weights[feather_mask] = 1.0 - t
 
         return np.clip(weights, 0.0, 1.0)
 
@@ -798,8 +1966,19 @@ class PreviewCanvas(QFrame):
         img_h, img_w = self._editable_rgba.shape[:2]
         brush_radius = max(1.0, self._brush_size / 2.0)
 
-        if self._tool_name in ("Magic Erase", "Background Erase") and self._apply_mode == "Brush":
-            match_radius = max(brush_radius * 3.0, 48.0)
+        if (
+            self._apply_mode == "Smart Selection"
+            and self._magic_mode == "Global Match"
+            and self._tool_name in ("Magic Erase", "Background Erase")
+        ):
+            return 0, img_w, 0, img_h
+
+        if self._apply_mode == "Smart Selection":
+            match_radius = max(brush_radius * 6.0, 180.0)
+            match_radius = min(match_radius, 420.0)
+        elif self._tool_name in ("Magic Erase", "Background Erase") and self._apply_mode == "Brush":
+            match_radius = max(brush_radius * 1.75, 48.0)
+            match_radius = min(match_radius, 180.0)
         else:
             match_radius = brush_radius + 3.0
 
@@ -814,7 +1993,7 @@ class PreviewCanvas(QFrame):
             return None
 
         return x0, x1, y0, y1
-
+        
     def _local_brush_weight_mask(self, center_x: int, center_y: int, bounds):
         if self._editable_rgba is None or bounds is None:
             return None
@@ -840,7 +2019,11 @@ class PreviewCanvas(QFrame):
 
         feather_mask = (distance > inner_radius) & (distance <= radius)
         feather_width = max(1e-6, radius - inner_radius)
-        weights[feather_mask] = 1.0 - ((distance[feather_mask] - inner_radius) / feather_width)
+
+        t = (distance[feather_mask] - inner_radius) / feather_width
+        t = t * t * (3.0 - 2.0 * t)
+
+        weights[feather_mask] = 1.0 - t
 
         return np.clip(weights, 0.0, 1.0)
 
@@ -951,6 +2134,53 @@ class PreviewCanvas(QFrame):
         tolerance_mask = distance <= effective_tolerance
         visible_mask = alpha_region > 8.0
         tolerance_mask &= visible_mask
+
+        return tolerance_mask
+        
+    def _restore_tolerance_mask_local(self, x: int, y: int, bounds):
+        if self._editable_rgba is None or self._restore_source_rgba is None or bounds is None:
+            return None
+
+        x0, x1, y0, y1 = bounds
+        current_region = self._editable_rgba[y0:y1, x0:x1]
+        restore_region = self._restore_source_rgba[y0:y1, x0:x1]
+
+        current_alpha = current_region[:, :, 3].astype(np.float32)
+        restore_rgb = restore_region[:, :, :3].astype(np.float32)
+
+        local_x = x - x0
+        local_y = y - y0
+
+        h, w = current_alpha.shape
+        if local_x < 0 or local_y < 0 or local_x >= w or local_y >= h:
+            return None
+
+        if current_alpha[local_y, local_x] >= 245.0:
+            return None
+
+        seed_color = restore_rgb[local_y, local_x]
+        diff = restore_rgb - seed_color
+        distance = np.sqrt(np.sum(diff * diff, axis=2))
+
+        px0 = max(0, local_x - 2)
+        px1 = min(w, local_x + 3)
+        py0 = max(0, local_y - 2)
+        py1 = min(h, local_y + 3)
+
+        local_patch = restore_rgb[py0:py1, px0:px1]
+        local_seed_dist = np.sqrt(np.sum((local_patch - seed_color) ** 2, axis=2))
+
+        local_mean = float(np.mean(local_seed_dist)) if local_seed_dist.size else 0.0
+        local_std = float(np.std(local_seed_dist)) if local_seed_dist.size else 0.0
+
+        adaptive_bonus = min(18.0, local_mean * 0.35 + local_std * 0.8)
+        effective_tolerance = float(self._tolerance) + adaptive_bonus
+        effective_tolerance = max(0.0, min(255.0, effective_tolerance))
+
+        tolerance_mask = distance <= effective_tolerance
+
+        low_alpha_mask = current_alpha <= min(245.0, current_alpha[local_y, local_x] + 40.0)
+        tolerance_mask &= low_alpha_mask
 
         return tolerance_mask
 
@@ -1070,42 +2300,68 @@ class PreviewCanvas(QFrame):
         if self._editable_rgba is None:
             return False
 
-        weight_mask = self._brush_weight_mask(x, y)
-        if weight_mask is None:
+        bounds = self._get_brush_bounds(x, y)
+        if bounds is None:
             return False
 
-        strength = max(0.0, min(1.0, self._opacity / 100.0))
+        x0, x1, y0, y1 = bounds
+        local_weights = self._local_brush_weight_mask(x, y, bounds)
+        if local_weights is None:
+            return False
+
+        opacity_strength = max(0.0, min(1.0, self._opacity / 100.0))
+        flow_strength = max(0.0, min(1.0, self._flow / 100.0))
+
+        if self._flow >= 100:
+            strength = opacity_strength
+        else:
+            strength = opacity_strength * flow_strength
         if strength <= 0.0:
             return False
 
-        before_alpha = self._editable_rgba[:, :, 3].astype(np.float32)
-        effective_strength = weight_mask * strength
+        alpha_region = self._editable_rgba[y0:y1, x0:x1, 3].astype(np.float32)
+        before_region = alpha_region.copy()
 
-        new_alpha = before_alpha * (1.0 - effective_strength)
-        self._editable_rgba[:, :, 3] = np.clip(new_alpha, 0, 255).astype(np.uint8)
+        flow_strength = max(0.0, min(1.0, self._flow / 100.0))
+        effective_strength = local_weights * flow_strength
 
-        return not np.array_equal(before_alpha.astype(np.uint8), self._editable_rgba[:, :, 3])
+        new_alpha_region = alpha_region * (1.0 - effective_strength)
+        self._editable_rgba[y0:y1, x0:x1, 3] = np.clip(new_alpha_region, 0, 255).astype(np.uint8)
+
+        return not np.array_equal(before_region.astype(np.uint8), self._editable_rgba[y0:y1, x0:x1, 3])
 
     def _brush_restore(self, x: int, y: int) -> bool:
         if self._editable_rgba is None or self._restore_source_rgba is None:
             return False
 
-        weight_mask = self._brush_weight_mask(x, y)
-        if weight_mask is None:
+        bounds = self._get_brush_bounds(x, y)
+        if bounds is None:
             return False
 
-        strength = max(0.0, min(1.0, self._opacity / 100.0))
+        x0, x1, y0, y1 = bounds
+        local_weights = self._local_brush_weight_mask(x, y, bounds)
+        if local_weights is None:
+            return False
+
+        opacity_strength = max(0.0, min(1.0, self._opacity / 100.0))
+        flow_strength = max(0.0, min(1.0, self._flow / 100.0))
+
+        if self._flow >= 100:
+            strength = opacity_strength
+        else:
+            strength = opacity_strength * flow_strength
         if strength <= 0.0:
             return False
 
-        before_rgba = self._editable_rgba.copy().astype(np.float32)
-        source_rgba = self._restore_source_rgba.astype(np.float32)
+        before_region = self._editable_rgba[y0:y1, x0:x1].copy().astype(np.float32)
+        source_region = self._restore_source_rgba[y0:y1, x0:x1].astype(np.float32)
 
-        effective_strength = (weight_mask * strength)[..., np.newaxis]
-        blended = before_rgba + ((source_rgba - before_rgba) * effective_strength)
+        flow_strength = max(0.0, min(1.0, self._flow / 100.0))
+        effective_strength = (local_weights * flow_strength)[..., np.newaxis]
+        blended = before_region + ((source_region - before_region) * effective_strength)
 
-        self._editable_rgba = np.clip(blended, 0, 255).astype(np.uint8)
-        return not np.array_equal(before_rgba.astype(np.uint8), self._editable_rgba)
+        self._editable_rgba[y0:y1, x0:x1] = np.clip(blended, 0, 255).astype(np.uint8)
+        return not np.array_equal(before_region.astype(np.uint8), self._editable_rgba[y0:y1, x0:x1])
 
     def _magic_erase(self, x: int, y: int) -> bool:
         if self._editable_rgba is None:
@@ -1149,8 +2405,13 @@ class PreviewCanvas(QFrame):
             final_strength = local_brush_weights * local_match_mask.astype(np.float32)
 
             if self._edge_protect_enabled:
-                local_rgb = self._editable_rgba[by0:by1, bx0:bx1, :3]
-                local_alpha = self._editable_rgba[by0:by1, bx0:bx1, 3]
+                if self._restore_source_rgba is not None:
+                    local_rgb = self._restore_source_rgba[by0:by1, bx0:bx1, :3]
+                    local_alpha = self._restore_source_rgba[by0:by1, bx0:bx1, 3]
+                else:
+                    local_rgb = self._editable_rgba[by0:by1, bx0:bx1, :3]
+                    local_alpha = self._editable_rgba[by0:by1, bx0:bx1, 3]
+
                 final_strength *= self._edge_protect_mask(local_rgb, local_alpha)
 
             final_strength *= strength_scale
@@ -1221,10 +2482,14 @@ class PreviewCanvas(QFrame):
             final_strength = local_brush_weights * local_match_mask.astype(np.float32)
 
             if self._edge_protect_enabled:
-                local_rgb = self._editable_rgba[by0:by1, bx0:bx1, :3]
-                local_alpha = self._editable_rgba[by0:by1, bx0:bx1, 3]
-                final_strength *= self._edge_protect_mask(local_rgb, local_alpha)
+                if self._restore_source_rgba is not None:
+                    local_rgb = self._restore_source_rgba[by0:by1, bx0:bx1, :3]
+                    local_alpha = self._restore_source_rgba[by0:by1, bx0:bx1, 3]
+                else:
+                    local_rgb = self._editable_rgba[by0:by1, bx0:bx1, :3]
+                    local_alpha = self._editable_rgba[by0:by1, bx0:bx1, 3]
 
+                final_strength *= self._edge_protect_mask(local_rgb, local_alpha)
             final_strength *= strength_scale
 
             alpha_region = self._editable_rgba[by0:by1, bx0:bx1, 3].astype(np.float32)
@@ -1263,10 +2528,292 @@ class PreviewCanvas(QFrame):
         self._save_history_snapshot()
 
     def _finish_edit_update(self):
+        if self._editable_rgba is None:
+            return
+
+        rgba_view = np.ascontiguousarray(self._editable_rgba)
+        img_h, img_w = rgba_view.shape[:2]
+
+        qimage = QImage(
+            rgba_view.data,
+            img_w,
+            img_h,
+            rgba_view.strides[0],
+            QImage.Format.Format_RGBA8888,
+        ).copy()
+
+        self._current_pixmap = QPixmap.fromImage(qimage)
+        self._current_mode = "after"
+        self._render_current_pixmap()
+
+    def _commit_direct_rgba_cleanup(self, new_rgba: np.ndarray) -> bool:
+        if self._editable_rgba is None:
+            return False
+
+        if new_rgba is None:
+            return False
+
+        new_rgba = np.clip(new_rgba, 0, 255).astype(np.uint8)
+
+        if np.array_equal(self._editable_rgba, new_rgba):
+            return False
+
+        undo_state = self._editable_rgba.copy()
+        self._editable_rgba = new_rgba
+        self._push_undo_state(undo_state)
+
+        self._pending_undo_state = None
+        self._stroke_changed = False
+        self._clear_smart_selection_preview()
+        self._smart_stroke_accum_mask = None
+        self._smart_stroke_base_rgba = None
+
         self._sync_pil_from_rgba()
         self._save_edited_preview()
         self._current_mode = "after"
+        self._interaction_mode = "edit"
         self._load_current_mode_pixmap()
+        self._save_history_snapshot()
+
+        return True
+
+    def cleanup_fill_small_holes(self) -> bool:
+        if self._editable_rgba is None:
+            return False
+
+        alpha = self._editable_rgba[:, :, 3].astype(np.float32)
+
+        # foreground = visible pixels
+        foreground = alpha > 8.0
+
+        # fill holes in binary mask
+        filled = self._fill_small_holes(foreground, max_hole_area=256)
+
+        # holes = areas that were empty but got filled
+        hole_mask = filled & (~foreground)
+
+        if not np.any(hole_mask):
+            return False
+
+        result = self._editable_rgba.copy()
+
+        if self._restore_source_rgba is not None:
+            # only restore ALPHA softly, not full color overwrite
+            restore_alpha = self._restore_source_rgba[:, :, 3].astype(np.float32)
+
+            result_alpha = result[:, :, 3].astype(np.float32)
+
+            # blend instead of overwrite (prevents harsh patches)
+            result_alpha[hole_mask] = (
+                result_alpha[hole_mask] * 0.3 +
+                restore_alpha[hole_mask] * 0.7
+            )
+
+            result[:, :, 3] = np.clip(result_alpha, 0, 255).astype(np.uint8)
+        else:
+            result[hole_mask, 3] = 255
+
+        return self._commit_direct_rgba_cleanup(result)
+
+    def cleanup_remove_speckles(self) -> bool:
+        if self._editable_rgba is None:
+            return False
+
+        alpha = self._editable_rgba[:, :, 3]
+        foreground = alpha > 8
+        cleaned = self._remove_small_islands(foreground, max_island_area=80)
+        speckle_mask = foreground & (~cleaned)
+
+        if not np.any(speckle_mask):
+            return False
+
+        result = self._editable_rgba.copy()
+        result[speckle_mask, 3] = 0
+
+        return self._commit_direct_rgba_cleanup(result)
+
+    def cleanup_decontaminate_edges(self) -> bool:
+        if self._editable_rgba is None:
+            return False
+
+        result = self._editable_rgba.copy()
+        rgb = result[:, :, :3].astype(np.float32)
+        alpha = result[:, :, 3].astype(np.float32)
+
+        edge_mask = (alpha > 0.0) & (alpha < 245.0)
+        opaque_mask = alpha >= 245.0
+
+        if not np.any(edge_mask) or not np.any(opaque_mask):
+            return False
+
+        h, w = alpha.shape
+        padded_rgb = np.pad(rgb, ((1, 1), (1, 1), (0, 0)), mode="edge")
+        padded_opaque = np.pad(opaque_mask, 1, mode="constant", constant_values=False)
+
+        rgb_sum = np.zeros_like(rgb, dtype=np.float32)
+        count = np.zeros((h, w), dtype=np.float32)
+
+        for dy in range(3):
+            for dx in range(3):
+                neighbor_rgb = padded_rgb[dy:dy + h, dx:dx + w]
+                neighbor_mask = padded_opaque[dy:dy + h, dx:dx + w]
+
+                rgb_sum += neighbor_rgb * neighbor_mask[..., np.newaxis]
+                count += neighbor_mask.astype(np.float32)
+
+        valid_mask = edge_mask & (count > 0.0)
+
+        if not np.any(valid_mask):
+            return False
+
+        average_rgb = rgb_sum / np.maximum(count[..., np.newaxis], 1.0)
+
+        strength = np.clip((255.0 - alpha) / 255.0, 0.0, 1.0) * 0.75
+        strength = strength[..., np.newaxis]
+
+        new_rgb = rgb.copy()
+        new_rgb[valid_mask] = (
+            rgb[valid_mask] * (1.0 - strength[valid_mask])
+            + average_rgb[valid_mask] * strength[valid_mask]
+        )
+
+        result[:, :, :3] = np.clip(new_rgb, 0, 255).astype(np.uint8)
+
+        return self._commit_direct_rgba_cleanup(result)
+
+    def cleanup_refine_alpha_edge(self) -> bool:
+        if self._editable_rgba is None:
+            return False
+
+        result = self._editable_rgba.copy()
+        alpha = result[:, :, 3].astype(np.float32)
+
+        edge_mask = (alpha > 0.0) & (alpha < 255.0)
+
+        if not np.any(edge_mask):
+            return False
+
+        h, w = alpha.shape
+        padded_alpha = np.pad(alpha, 1, mode="edge")
+        alpha_sum = np.zeros_like(alpha, dtype=np.float32)
+
+        for dy in range(3):
+            for dx in range(3):
+                alpha_sum += padded_alpha[dy:dy + h, dx:dx + w]
+
+        average_alpha = alpha_sum / 9.0
+        refined_alpha = alpha.copy()
+        refined_alpha[edge_mask] = (
+            alpha[edge_mask] * 0.70
+            + average_alpha[edge_mask] * 0.30
+        )
+
+        result[:, :, 3] = np.clip(refined_alpha, 0, 255).astype(np.uint8)
+
+        return self._commit_direct_rgba_cleanup(result)
+
+    def cleanup_restore_original_edge_alpha(self) -> bool:
+        if self._editable_rgba is None or self._restore_source_rgba is None:
+            return False
+
+        result = self._editable_rgba.copy()
+
+        current = result.astype(np.float32)
+        source = self._restore_source_rgba.astype(np.float32)
+
+        current_alpha = current[:, :, 3]
+        source_alpha = source[:, :, 3]
+
+        restore_mask = (
+            (current_alpha > 0.0)
+            & (current_alpha < 245.0)
+            & (source_alpha > current_alpha)
+        )
+
+        if not np.any(restore_mask):
+            return False
+
+        alpha_blend = 0.60
+        rgb_blend = 0.40
+
+        current[restore_mask, 3] = (
+            current[restore_mask, 3] * (1.0 - alpha_blend)
+            + source[restore_mask, 3] * alpha_blend
+        )
+
+        current[restore_mask, :3] = (
+            current[restore_mask, :3] * (1.0 - rgb_blend)
+            + source[restore_mask, :3] * rgb_blend
+        )
+
+        result = np.clip(current, 0, 255).astype(np.uint8)
+
+        return self._commit_direct_rgba_cleanup(result)
+        
+    def cleanup_blend_model_editor_edge(self) -> bool:
+        if self._editable_rgba is None or self._restore_source_rgba is None:
+            return False
+
+        current = self._editable_rgba.astype(np.float32)
+        source = self._restore_source_rgba.astype(np.float32)
+
+        current_alpha = current[:, :, 3]
+        source_alpha = source[:, :, 3]
+
+        visible = current_alpha > 8.0
+        transparent = current_alpha <= 8.0
+
+        # Boundary = visible pixels touching transparent pixels.
+        padded_transparent = np.pad(
+            transparent,
+            1,
+            mode="constant",
+            constant_values=True,
+        )
+
+        h, w = current_alpha.shape
+        near_transparent = np.zeros((h, w), dtype=bool)
+
+        for dy in range(3):
+            for dx in range(3):
+                near_transparent |= padded_transparent[dy:dy + h, dx:dx + w]
+
+        seam_mask = visible & near_transparent
+
+        # Expand inward slightly so the blend has enough pixels to affect.
+        seam_mask = self._dilate_binary_mask(seam_mask, 1) & visible
+
+        if not np.any(seam_mask):
+            return False
+
+        result = current.copy()
+
+        # Smooth the current alpha along the boundary.
+        padded_alpha = np.pad(current_alpha, 1, mode="edge")
+        alpha_sum = np.zeros_like(current_alpha, dtype=np.float32)
+
+        for dy in range(3):
+            for dx in range(3):
+                alpha_sum += padded_alpha[dy:dy + h, dx:dx + w]
+
+        average_alpha = alpha_sum / 9.0
+
+        # Blend current alpha toward local average, then lightly toward original/model alpha.
+        result[seam_mask, 3] = (
+            current[seam_mask, 3] * 0.55
+            + average_alpha[seam_mask] * 0.25
+            + source_alpha[seam_mask] * 0.20
+        )
+
+        # Lightly restore edge RGB from original/model pixels to reduce edge mismatch.
+        result[seam_mask, :3] = (
+            current[seam_mask, :3] * 0.70
+            + source[seam_mask, :3] * 0.30
+        )
+
+        result = np.clip(result, 0, 255).astype(np.uint8)
+
+        return self._commit_direct_rgba_cleanup(result)
 
     def reset_edits(self):
         if self._edit_reset_baseline_rgba is None:
@@ -1277,6 +2824,9 @@ class PreviewCanvas(QFrame):
         self._redo_stack.clear()
         self._pending_undo_state = None
         self._stroke_changed = False
+        self._clear_smart_selection_preview()
+        self._smart_stroke_accum_mask = None
+        self._smart_stroke_base_rgba = None
 
         self._sync_pil_from_rgba()
         self._save_edited_preview()
@@ -1301,6 +2851,9 @@ class PreviewCanvas(QFrame):
 
         self._pending_undo_state = None
         self._stroke_changed = False
+        self._clear_smart_selection_preview()
+        self._smart_stroke_accum_mask = None
+        self._smart_stroke_base_rgba = None
 
         self._sync_pil_from_rgba()
         self._save_edited_preview()
@@ -1318,6 +2871,9 @@ class PreviewCanvas(QFrame):
 
         self._pending_undo_state = None
         self._stroke_changed = False
+        self._clear_smart_selection_preview()
+        self._smart_stroke_accum_mask = None
+        self._smart_stroke_base_rgba = None
 
         self._sync_pil_from_rgba()
         self._save_edited_preview()

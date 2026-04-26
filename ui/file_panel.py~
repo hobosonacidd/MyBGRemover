@@ -143,14 +143,12 @@ class FilePanel(QFrame):
             "Reset the checked items back to their original state and clear processed/edited working state."
         )
 
-        self.open_output_btn = QPushButton("Open Output Folder")
-        self.open_output_btn.setToolTip(
-            "Open the current output folder. If no output folder is set, open the selected image's source folder."
-        )
+        self.load_watch_folder_btn = QPushButton("Load Watch Folder")
+        self.load_watch_folder_btn.setToolTip("Load the saved watch folder into the file list.")
 
         action_row_1.addWidget(self.remove_selected_btn)
         action_row_1.addWidget(self.reset_selected_btn)
-        action_row_1.addWidget(self.open_output_btn)
+        action_row_1.addWidget(self.load_watch_folder_btn)
         layout.addLayout(action_row_1)
 
         action_row_2 = QHBoxLayout()
@@ -161,12 +159,18 @@ class FilePanel(QFrame):
             "Remove every loaded item whose status is exported from the file list."
         )
 
+        self.retry_failed_btn = QPushButton("Retry Failed")
+        self.retry_failed_btn.setToolTip(
+            "Reset every item with status 'error' back to pending so you can try again."
+        )
+
         self.clear_all_btn = QPushButton("Clear All")
         self.clear_all_btn.setToolTip(
             "Remove every loaded item from the file list. This does not delete the original image files from disk."
         )
 
         action_row_2.addWidget(self.clear_completed_btn)
+        action_row_2.addWidget(self.retry_failed_btn)
         action_row_2.addWidget(self.clear_all_btn)
         layout.addLayout(action_row_2)
 
