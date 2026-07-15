@@ -1,0 +1,2805 @@
+import subprocess
+from PySide6.QtWidgets import (
+    QButtonGroup,
+    QCheckBox,
+    QColorDialog,
+    QComboBox,
+    QFileDialog,
+    QFrame,
+    QGridLayout,
+    QGroupBox,
+    QHBoxLayout,
+    QLabel,
+    QLineEdit,
+    QListWidget,
+    QListWidgetItem,
+    QMessageBox,
+    QPushButton,
+    QScrollArea,
+    QSizePolicy,
+    QSlider,
+    QSpinBox,
+    QTabWidget,
+    QTextEdit,
+    QVBoxLayout,
+    QWidget,
+)
+from PySide6.QtCore import Qt, Signal, QSize, QEvent, QUrl
+from PySide6.QtGui import QColor, QIcon, QPixmap, QDesktopServices
+from pathlib import Path
+
+
+class SettingsPanel(QFrame):
+    color_pick_from_preview_requested = Signal()
+    tool_mode_about_to_change = Signal(str, str)
+    tool_preset_apply_requested = Signal(str, str, str)
+    preview_color_pick_requested = Signal()
+
+    def __init__(self):
+        super().__init__()
+
+        self.setObjectName("settingsPanel")
+        self.setFrameShape(QFrame.StyledPanel)
+        self.setMinimumWidth(320)
+
+        self.backend_descriptions = {
+            "rembg": (
+                "Recommended default backend for most images.\n"
+                "Best overall choice for general objects, products, mixed subjects, "
+                "and most everyday cutouts."
+            ),
+            "InSPyReNet": (
+                "Working alternate general backend.\n"
+                "Useful for comparing results against rembg on harder images.\n"
+                "This backend uses its own Mode, Resize, and Threshold controls."
+            ),
+            "MODNet": (
+                "Working portrait-focused backend.\n"
+                "Best for people, portraits, and selfies.\n"
+                "Usually weaker than rembg on non-human subjects."
+            ),
+        }
+
+        self.model_descriptions = {
+            "u2net": "Balanced general-purpose rembg model with good overall quality.",
+            "u2netp": "Fastest lightweight general-purpose rembg model. Good default choice.",
+            "u2net_human_seg": "Portrait-focused rembg model for people and human cutouts.",
+            "u2net_cloth_seg": "Clothing-focused rembg model for human portraits and apparel areas.",
+            "isnet-general-use": "General-use rembg model. Can produce higher quality, but may be heavier/slower.",
+            "isnet-anime": "Anime and illustrated-character rembg model.",
+            "silueta": "Lightweight rembg model for simpler silhouette-style cutouts.",
+            "birefnet-dis": "Slower rembg model for harder separations and dichotomous segmentation.",
+            "birefnet-hrsod": "Slower rembg model for more detailed salient object detection.",
+            "birefnet-cod": "Experimental rembg model for concealed or low-contrast subject separations.",
+        }
+
+        self.tool_defaults = {
+            "Erase": {
+                "Brush": {
+                    "apply_mode": "Brush",
+                    "brush_size": 42,
+                    "softness": 35,
+                    "opacity": 100,
+                    "flow": 100,
+                    "spacing": 1,
+                    "tolerance": 35,
+                    "magic_mode": "Connected Region",
+                    "edge_protect": True,
+                    "smart_feather": 0,
+                    "smart_expand": 1,
+                    "smart_cleanup_holes": True,
+                    "smart_cleanup_speckles": True,
+                },
+                "Smart Selection": {
+                    "apply_mode": "Smart Selection",
+                    "brush_size": 42,
+                    "softness": 35,
+                    "opacity": 100,
+                    "flow": 100,
+                    "spacing": 1,
+                    "tolerance": 35,
+                    "magic_mode": "Connected Region",
+                    "edge_protect": True,
+                    "smart_feather": 0,
+                    "smart_expand": 1,
+                    "smart_cleanup_holes": True,
+                    "smart_cleanup_speckles": True,
+                },
+            },
+            "Restore": {
+                "Brush": {
+                    "apply_mode": "Brush",
+                    "brush_size": 42,
+                    "softness": 45,
+                    "opacity": 100,
+                    "flow": 100,
+                    "spacing": 1,
+                    "tolerance": 35,
+                    "magic_mode": "Connected Region",
+                    "edge_protect": True,
+                    "smart_feather": 0,
+                    "smart_expand": 1,
+                    "smart_cleanup_holes": True,
+                    "smart_cleanup_speckles": True,
+                },
+                "Smart Selection": {
+                    "apply_mode": "Smart Selection",
+                    "brush_size": 42,
+                    "softness": 45,
+                    "opacity": 100,
+                    "flow": 100,
+                    "spacing": 1,
+                    "tolerance": 35,
+                    "magic_mode": "Connected Region",
+                    "edge_protect": True,
+                    "smart_feather": 0,
+                    "smart_expand": 1,
+                    "smart_cleanup_holes": True,
+                    "smart_cleanup_speckles": True,
+                },
+            },
+            "Magic Erase": {
+                "Brush": {
+                    "apply_mode": "Brush",
+                    "brush_size": 36,
+                    "softness": 55,
+                    "opacity": 100,
+                    "flow": 100,
+                    "spacing": 1,
+                    "tolerance": 24,
+                    "magic_mode": "Connected Region",
+                    "edge_protect": True,
+                    "smart_feather": 0,
+                    "smart_expand": 1,
+                    "smart_cleanup_holes": True,
+                    "smart_cleanup_speckles": True,
+                },
+                "Smart Selection": {
+                    "apply_mode": "Smart Selection",
+                    "brush_size": 36,
+                    "softness": 55,
+                    "opacity": 100,
+                    "flow": 100,
+                    "spacing": 1,
+                    "tolerance": 24,
+                    "magic_mode": "Connected Region",
+                    "edge_protect": True,
+                    "smart_feather": 0,
+                    "smart_expand": 1,
+                    "smart_cleanup_holes": True,
+                    "smart_cleanup_speckles": True,
+                },
+            },
+            "Background Erase": {
+                "Brush": {
+                    "apply_mode": "Brush",
+                    "brush_size": 36,
+                    "softness": 55,
+                    "opacity": 100,
+                    "flow": 100,
+                    "spacing": 1,
+                    "tolerance": 20,
+                    "magic_mode": "Connected Region",
+                    "edge_protect": True,
+                    "smart_feather": 0,
+                    "smart_expand": 1,
+                    "smart_cleanup_holes": True,
+                    "smart_cleanup_speckles": True,
+                },
+                "Smart Selection": {
+                    "apply_mode": "Smart Selection",
+                    "brush_size": 36,
+                    "softness": 55,
+                    "opacity": 100,
+                    "flow": 100,
+                    "spacing": 1,
+                    "tolerance": 20,
+                    "magic_mode": "Connected Region",
+                    "edge_protect": True,
+                    "smart_feather": 0,
+                    "smart_expand": 1,
+                    "smart_cleanup_holes": True,
+                    "smart_cleanup_speckles": True,
+                },
+            },
+        }
+
+        self._selected_removal_color_rgb = (255, 255, 255)
+
+        self._last_tool_name = "Erase"
+        self._last_apply_mode = "Brush"
+        self._preset_entries = []
+        self._selected_preset_name = ""
+
+        main_layout = QVBoxLayout(self)
+        main_layout.setContentsMargins(8, 8, 8, 8)
+        main_layout.setSpacing(5)
+
+        title = QLabel("Settings Panel")
+        title.setObjectName("panelTitle")
+        main_layout.addWidget(title)
+
+        self.panel_tabs = QTabWidget()
+        main_layout.addWidget(self.panel_tabs, 1)
+
+        # Each tab has its own scroll area.
+        # This keeps the Settings / Editor / Export tab bar fixed at the top.
+        self.settings_scroll_area = QScrollArea()
+        self.settings_scroll_area.setWidgetResizable(True)
+        self.settings_scroll_area.setFrameShape(QFrame.Shape.NoFrame)
+        self.settings_scroll_area.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self.settings_scroll_area.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+
+        self.editor_scroll_area = QScrollArea()
+        self.editor_scroll_area.setWidgetResizable(True)
+        self.editor_scroll_area.setFrameShape(QFrame.Shape.NoFrame)
+        self.editor_scroll_area.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self.editor_scroll_area.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+
+        self.export_scroll_area = QScrollArea()
+        self.export_scroll_area.setWidgetResizable(True)
+        self.export_scroll_area.setFrameShape(QFrame.Shape.NoFrame)
+        self.export_scroll_area.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self.export_scroll_area.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+
+        self.settings_tab = QWidget()
+        self.settings_tab.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.MinimumExpanding)
+
+        self.editor_tab = QWidget()
+        self.editor_tab.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.MinimumExpanding)
+
+        self.export_tab = QWidget()
+        self.export_tab.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.MinimumExpanding)
+
+        self.settings_layout = QVBoxLayout(self.settings_tab)
+        self.settings_layout.setContentsMargins(6, 6, 6, 6)
+        self.settings_layout.setSpacing(7)
+
+        self.editor_layout = QVBoxLayout(self.editor_tab)
+        self.editor_layout.setContentsMargins(6, 6, 6, 6)
+        self.editor_layout.setSpacing(4)
+
+        self.export_layout = QVBoxLayout(self.export_tab)
+        self.export_layout.setContentsMargins(6, 6, 6, 6)
+        self.export_layout.setSpacing(7)
+
+        self.settings_scroll_area.setWidget(self.settings_tab)
+        self.editor_scroll_area.setWidget(self.editor_tab)
+        self.export_scroll_area.setWidget(self.export_tab)
+
+        self.panel_tabs.addTab(self.settings_scroll_area, "Settings")
+        self.panel_tabs.addTab(self.editor_scroll_area, "Editor")
+        self.panel_tabs.addTab(self.export_scroll_area, "Export")
+
+        self._build_settings_tab()
+        self._build_editor_tab()
+        self._build_export_tab()
+        self._ensure_split_process_export_controls()
+        if hasattr(self, "action_section_label"):
+            self.action_section_label.hide()
+        self._apply_remaining_color_removal_tooltips()
+        self._connect_internal_signals()
+
+        self.update_backend_hint()
+        self.update_backend_visibility()
+        self.update_model_hint()
+        self.update_mode_visibility()
+        self.update_background_visibility()
+        self._apply_defaults_for_tool_and_mode(
+            self.tool_combo.currentText(),
+            self.apply_mode_combo.currentText(),
+        )
+        self.update_tool_visibility()
+        self._refresh_preset_combo_for_current_context()
+        self.update_suffix_preview()
+        if hasattr(self, "pick_from_preview_btn"):
+            self._apply_dropper_icon_to_preview_button()
+        if hasattr(self, "pick_from_preview_btn"):
+            self._apply_dropper_icon_to_preview_button()
+        self._apply_color_removal_tooltips()
+        self._install_scroll_wheel_guard()
+        self._update_responsive_button_texts()
+
+    def _build_settings_tab(self):
+        layout = self.settings_layout
+
+        self.removal_mode_label = QLabel("Removal Mode")
+        self.removal_mode_combo = QComboBox()
+        self.removal_mode_combo.addItems(["AI Removal", "Color Removal"])
+        self.removal_mode_combo.setToolTip(
+            "Choose how the background should be removed.\n"
+            "AI Removal uses the selected AI backend.\n"
+            "Color Removal removes a selected color using the controls below."
+        )
+        layout.addWidget(self.removal_mode_label)
+        layout.addWidget(self.removal_mode_combo)
+
+        self.backend_label = QLabel("Backend")
+        self.backend_combo = QComboBox()
+        self.backend_combo.addItems(["rembg", "InSPyReNet", "MODNet"])
+        self.backend_combo.setCurrentText("rembg")
+        layout.addWidget(self.backend_label)
+        layout.addWidget(self.backend_combo)
+
+        self.backend_hint_label = QLabel("")
+        self.backend_hint_label.setWordWrap(True)
+        self.backend_hint_label.setVisible(False)
+        layout.addWidget(self.backend_hint_label)
+
+        self.backend_recommendation_label = QLabel("")
+        self.backend_recommendation_label.setWordWrap(True)
+        self.backend_recommendation_label.setVisible(False)
+        layout.addWidget(self.backend_recommendation_label)
+
+        self.backend_reset_btn = QPushButton("Reset Current Backend Settings")
+        self.backend_reset_btn.setToolTip(
+            "Reset only the controls for the currently selected backend."
+        )
+        self._configure_action_button(self.backend_reset_btn)
+        layout.addWidget(self.backend_reset_btn)
+
+        self.model_label = QLabel("Model")
+        self.model_combo = QComboBox()
+        self.model_combo.addItems([
+            "u2net",
+            "u2netp",
+            "u2net_human_seg",
+            "u2net_cloth_seg",
+            "isnet-general-use",
+            "isnet-anime",
+            "silueta",
+            "birefnet-dis",
+            "birefnet-hrsod",
+            "birefnet-cod",
+        ])
+        self.model_combo.setCurrentText("u2netp")
+        layout.addWidget(self.model_label)
+        layout.addWidget(self.model_combo)
+
+        self._apply_model_item_tooltips()
+
+        self.model_hint_label = QLabel("")
+        self.model_hint_label.setWordWrap(True)
+        self.model_hint_label.setVisible(False)
+        layout.addWidget(self.model_hint_label)
+
+        self.rembg_section_label = QLabel("rembg Controls")
+        self._configure_section_label(self.rembg_section_label)
+        layout.addWidget(self.rembg_section_label)
+
+        self.rembg_alpha_matting_check = QCheckBox("Use Alpha Matting")
+        self.rembg_alpha_matting_check.setToolTip(
+            "Use rembg alpha matting postprocessing for cleaner edges on some images."
+        )
+        layout.addWidget(self.rembg_alpha_matting_check)
+
+        self.rembg_fg_label = QLabel("Foreground Threshold")
+        self.rembg_fg_row, self.rembg_fg_slider, self.rembg_fg_value_box = self._create_slider_row(1, 255)
+        self.rembg_fg_slider.setValue(240)
+        self._set_tooltip_for_widgets(
+            "Higher = stronger confidence required for foreground.",
+            self.rembg_fg_label,
+            self.rembg_fg_row,
+            self.rembg_fg_slider,
+            self.rembg_fg_value_box,
+        )
+        layout.addWidget(self.rembg_fg_label)
+        layout.addWidget(self.rembg_fg_row)
+
+        self.rembg_bg_label = QLabel("Background Threshold")
+        self.rembg_bg_row, self.rembg_bg_slider, self.rembg_bg_value_box = self._create_slider_row(0, 255)
+        self.rembg_bg_slider.setValue(10)
+        self._set_tooltip_for_widgets(
+            "Lower = stricter background cutoff.",
+            self.rembg_bg_label,
+            self.rembg_bg_row,
+            self.rembg_bg_slider,
+            self.rembg_bg_value_box,
+        )
+        layout.addWidget(self.rembg_bg_label)
+        layout.addWidget(self.rembg_bg_row)
+
+        self.rembg_erode_label = QLabel("Erode Size")
+        self.rembg_erode_row, self.rembg_erode_slider, self.rembg_erode_value_box = self._create_slider_row(0, 50)
+        self.rembg_erode_slider.setValue(10)
+        self._set_tooltip_for_widgets(
+            "Mask erosion size used during alpha matting cleanup.",
+            self.rembg_erode_label,
+            self.rembg_erode_row,
+            self.rembg_erode_slider,
+            self.rembg_erode_value_box,
+        )
+        layout.addWidget(self.rembg_erode_label)
+        layout.addWidget(self.rembg_erode_row)
+
+        self.rembg_post_process_check = QCheckBox("Post-process Mask")
+        self.rembg_post_process_check.setToolTip(
+            "Apply rembg mask cleanup after segmentation."
+        )
+        layout.addWidget(self.rembg_post_process_check)
+
+        self.rembg_hint_label = QLabel("")
+        self.rembg_hint_label.setWordWrap(True)
+        self.rembg_hint_label.setVisible(False)
+        layout.addWidget(self.rembg_hint_label)
+
+        self.inspyrenet_section_label = QLabel("InSPyReNet Controls")
+        self._configure_section_label(self.inspyrenet_section_label)
+        layout.addWidget(self.inspyrenet_section_label)
+
+        self.inspyrenet_mode_label = QLabel("InSPyReNet Mode")
+        self.inspyrenet_mode_combo = QComboBox()
+        self.inspyrenet_mode_combo.addItems(["fast", "base"])
+        self.inspyrenet_mode_combo.setCurrentText("fast")
+        self._set_tooltip_for_widgets(
+            "fast = safer default and quicker.\n"
+            "base = heavier full model and may produce different results.",
+            self.inspyrenet_mode_label,
+            self.inspyrenet_mode_combo,
+        )
+        layout.addWidget(self.inspyrenet_mode_label)
+        layout.addWidget(self.inspyrenet_mode_combo)
+
+        self.inspyrenet_resize_label = QLabel("InSPyReNet Resize")
+        self.inspyrenet_resize_combo = QComboBox()
+        self.inspyrenet_resize_combo.addItems(["static", "dynamic"])
+        self.inspyrenet_resize_combo.setCurrentText("static")
+        self._set_tooltip_for_widgets(
+            "static = safer and more stable.\n"
+            "dynamic = can preserve more detail, but may be less stable.",
+            self.inspyrenet_resize_label,
+            self.inspyrenet_resize_combo,
+        )
+        layout.addWidget(self.inspyrenet_resize_label)
+        layout.addWidget(self.inspyrenet_resize_combo)
+
+        self.inspyrenet_threshold_label = QLabel("InSPyReNet Threshold")
+        self.inspyrenet_threshold_row, self.inspyrenet_threshold_slider, self.inspyrenet_threshold_value_box = self._create_slider_row(0, 100)
+        self.inspyrenet_threshold_slider.setValue(50)
+        self._set_tooltip_for_widgets(
+            "Controls the alpha cutoff used after the InSPyReNet prediction.\n"
+            "Lower = keep more semi-transparent edge detail.\n"
+            "Higher = stronger cutout with firmer edges.",
+            self.inspyrenet_threshold_label,
+            self.inspyrenet_threshold_row,
+            self.inspyrenet_threshold_slider,
+            self.inspyrenet_threshold_value_box,
+        )
+        layout.addWidget(self.inspyrenet_threshold_label)
+        layout.addWidget(self.inspyrenet_threshold_row)
+
+        self.inspyrenet_hint_label = QLabel("")
+        self.inspyrenet_hint_label.setWordWrap(True)
+        self.inspyrenet_hint_label.setVisible(False)
+        layout.addWidget(self.inspyrenet_hint_label)
+
+        self.modnet_section_label = QLabel("MODNet Controls")
+        self._configure_section_label(self.modnet_section_label)
+        layout.addWidget(self.modnet_section_label)
+
+        self.modnet_threshold_label = QLabel("MODNet Matte Threshold")
+        self.modnet_threshold_row, self.modnet_threshold_slider, self.modnet_threshold_value_box = self._create_slider_row(0, 100)
+        self.modnet_threshold_slider.setValue(10)
+        self._set_tooltip_for_widgets(
+            "Lower = keep more of the soft portrait matte.\n"
+            "Higher = stronger cutout but can remove fine edge detail.",
+            self.modnet_threshold_label,
+            self.modnet_threshold_row,
+            self.modnet_threshold_slider,
+            self.modnet_threshold_value_box,
+        )
+        layout.addWidget(self.modnet_threshold_label)
+        layout.addWidget(self.modnet_threshold_row)
+
+        self.modnet_feather_label = QLabel("MODNet Edge Feather")
+        self.modnet_feather_row, self.modnet_feather_slider, self.modnet_feather_value_box = self._create_slider_row(0, 20)
+        self.modnet_feather_slider.setValue(0)
+        self._set_tooltip_for_widgets(
+            "Softens the MODNet alpha edge after matte generation.",
+            self.modnet_feather_label,
+            self.modnet_feather_row,
+            self.modnet_feather_slider,
+            self.modnet_feather_value_box,
+        )
+        layout.addWidget(self.modnet_feather_label)
+        layout.addWidget(self.modnet_feather_row)
+
+        self.modnet_hint_label = QLabel("")
+        self.modnet_hint_label.setWordWrap(True)
+        self.modnet_hint_label.setVisible(False)
+        layout.addWidget(self.modnet_hint_label)
+
+        self.color_removal_section_label = QLabel("Color Removal")
+        self._configure_section_label(self.color_removal_section_label)
+        layout.addWidget(self.color_removal_section_label)
+
+        self.color_hex_label = QLabel("Selected Color")
+        self.color_hex_edit = QLineEdit("#FFFFFF")
+        self.color_hex_edit.setMaxLength(7)
+        self.color_hex_edit.setPlaceholderText("#FFFFFF")
+        self.color_hex_edit.setToolTip(
+            "Enter a hex color like #FFFFFF.\n"
+            "You can also type FFFFFF and it will be normalized.\n"
+            "Changing RGB or CMYK values also updates this field."
+        )
+
+        self.color_swatch_label = QLabel("")
+        self.color_swatch_label.setFixedSize(34, 28)
+        self.color_swatch_label.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.color_swatch_label.mousePressEvent = self._color_swatch_mouse_press
+        self.color_swatch_label.setToolTip(
+            "Preview of the color that Color Removal will make transparent."
+        )
+
+        self.pick_color_btn = QPushButton("Pick Color")
+        self.pick_color_btn.setToolTip("Pick a color for Color Removal mode.")
+        self._configure_action_button(self.pick_color_btn)
+
+        self.pick_preview_color_btn = QPushButton("Pick From Preview")
+        self.pick_preview_color_btn.setToolTip(
+            "Click this, then click a pixel on the preview image to use that pixel color."
+        )
+        self._configure_action_button(self.pick_preview_color_btn)
+
+        self.color_hex_row = QWidget()
+        color_hex_row_layout = QHBoxLayout(self.color_hex_row)
+        color_hex_row_layout.setContentsMargins(0, 0, 0, 0)
+        color_hex_row_layout.setSpacing(4)
+        color_hex_row_layout.addWidget(self.color_hex_edit, 1)
+        color_hex_row_layout.addWidget(self.color_swatch_label)
+        if hasattr(self, "pick_preview_color_btn"):
+            self.pick_preview_color_btn.setFixedWidth(42)
+            self.pick_preview_color_btn.setText("⌕")
+            self.pick_preview_color_btn.setToolTip(
+                "Pick Color From Preview: click this, then click a pixel on the preview image."
+            )
+            color_hex_row_layout.addWidget(self.pick_preview_color_btn)
+        self.pick_color_btn.hide()
+
+        layout.addWidget(self.color_hex_label)
+        layout.addWidget(self.color_hex_row)
+
+        self.color_sample_size_label = QLabel("Picker Sample Size")
+        self.color_sample_size_combo = QComboBox()
+        self.color_sample_size_combo.addItems(["1 px", "3x3", "5x5"])
+        self.color_sample_size_combo.setCurrentText("3x3")
+        self._set_tooltip_for_widgets(
+            "Controls how much area the preview eyedropper samples.\n"
+            "1 px = exact clicked pixel. 3x3 or 5x5 averages nearby pixels for noisy/compressed images.",
+            self.color_sample_size_label,
+            self.color_sample_size_combo,
+        )
+        layout.addWidget(self.color_sample_size_label)
+        layout.addWidget(self.color_sample_size_combo)
+
+        self.color_live_preview_check = QCheckBox("Preview Removed Pixels")
+        self.color_live_preview_check.setChecked(False)
+        self.color_live_preview_check.setToolTip(
+            "Shows a red overlay on the preview for pixels that match the current Color Removal settings.\n"
+            "This is only a preview overlay; it does not process the image until you click Process."
+        )
+        layout.addWidget(self.color_live_preview_check)
+
+        self.color_rgb_label = QLabel("RGB")
+        self.color_rgb_row = QWidget()
+        color_rgb_row_layout = QHBoxLayout(self.color_rgb_row)
+        color_rgb_row_layout.setContentsMargins(0, 0, 0, 0)
+        color_rgb_row_layout.setSpacing(4)
+        self.color_r_spin = QSpinBox()
+        self.color_g_spin = QSpinBox()
+        self.color_b_spin = QSpinBox()
+        for box, label_text in (
+            (self.color_r_spin, "R"),
+            (self.color_g_spin, "G"),
+            (self.color_b_spin, "B"),
+        ):
+            box.setRange(0, 255)
+            box.setFixedWidth(72)
+            box.setPrefix(f"{label_text} ")
+            box.setKeyboardTracking(False)
+            color_rgb_row_layout.addWidget(box)
+        color_rgb_row_layout.addStretch()
+        self._set_tooltip_for_widgets(
+            "RGB version of the selected Color Removal target color.",
+            self.color_rgb_label,
+            self.color_rgb_row,
+            self.color_r_spin,
+            self.color_g_spin,
+            self.color_b_spin,
+        )
+        layout.addWidget(self.color_rgb_label)
+        layout.addWidget(self.color_rgb_row)
+
+        self.color_cmyk_label = QLabel("CMYK")
+        self.color_cmyk_row = QWidget()
+        color_cmyk_row_layout = QHBoxLayout(self.color_cmyk_row)
+        color_cmyk_row_layout.setContentsMargins(0, 0, 0, 0)
+        color_cmyk_row_layout.setSpacing(4)
+        self.color_c_spin = QSpinBox()
+        self.color_m_spin = QSpinBox()
+        self.color_y_spin = QSpinBox()
+        self.color_k_spin = QSpinBox()
+        for box, label_text in (
+            (self.color_c_spin, "C"),
+            (self.color_m_spin, "M"),
+            (self.color_y_spin, "Y"),
+            (self.color_k_spin, "K"),
+        ):
+            box.setRange(0, 100)
+            box.setFixedWidth(68)
+            box.setPrefix(f"{label_text} ")
+            box.setSuffix("%")
+            box.setKeyboardTracking(False)
+            color_cmyk_row_layout.addWidget(box)
+        color_cmyk_row_layout.addStretch()
+        self._set_tooltip_for_widgets(
+            "CMYK version of the selected Color Removal target color.\n"
+            "Changing these values updates the hex and RGB fields.",
+            self.color_cmyk_label,
+            self.color_cmyk_row,
+            self.color_c_spin,
+            self.color_m_spin,
+            self.color_y_spin,
+            self.color_k_spin,
+        )
+        layout.addWidget(self.color_cmyk_label)
+        layout.addWidget(self.color_cmyk_row)
+
+        self.color_match_mode_label = QLabel("Color Match Mode")
+        self.color_match_mode_combo = QComboBox()
+        self.color_match_mode_combo.addItems(["Connected Edges", "Global Match"])
+        self.color_match_mode_combo.setCurrentText("Connected Edges")
+        self._set_tooltip_for_widgets(
+            "Connected Edges removes matching color connected to the image edges.\n"
+            "Global Match removes matching color everywhere in the image.",
+            self.color_match_mode_label,
+            self.color_match_mode_combo,
+        )
+        layout.addWidget(self.color_match_mode_label)
+        layout.addWidget(self.color_match_mode_combo)
+
+        self.threshold_label = QLabel("Color Threshold")
+        self.threshold_row, self.threshold_slider, self.threshold_value_box = self._create_slider_row(0, 255)
+        self.threshold_slider.setValue(30)
+        self._set_tooltip_for_widgets(
+            "How closely a pixel must match the selected color before it becomes transparent.\n"
+            "Lower values are stricter. Higher values remove a wider color range.",
+            self.threshold_label,
+            self.threshold_row,
+            self.threshold_slider,
+            self.threshold_value_box,
+        )
+
+        layout.addWidget(self.threshold_label)
+        layout.addWidget(self.threshold_row)
+
+        self.color_feather_label = QLabel("Color Edge Feather")
+        self.color_feather_row, self.color_feather_slider, self.color_feather_value_box = self._create_slider_row(0, 20)
+        self.color_feather_slider.setValue(0)
+        self._set_tooltip_for_widgets(
+            "Softens the transparent edge created by Color Removal.\n"
+            "Use small values like 1 to 3 first.",
+            self.color_feather_label,
+            self.color_feather_row,
+            self.color_feather_slider,
+            self.color_feather_value_box,
+        )
+        layout.addWidget(self.color_feather_label)
+        layout.addWidget(self.color_feather_row)
+
+        self.color_spill_label = QLabel("Color Spill Reduction")
+        self.color_spill_row, self.color_spill_slider, self.color_spill_value_box = self._create_slider_row(0, 100)
+        self.color_spill_slider.setValue(20)
+        self._set_tooltip_for_widgets(
+            "Reduces leftover selected-color tint around semi-transparent edges.\n"
+            "0 = off. 10-25 = gentle cleanup. Higher values are stronger and can dull edge colors.",
+            self.color_spill_label,
+            self.color_spill_row,
+            self.color_spill_slider,
+            self.color_spill_value_box,
+        )
+        layout.addWidget(self.color_spill_label)
+        layout.addWidget(self.color_spill_row)
+
+        self.protect_dark_colors_check = QCheckBox("Protect Dark Colors")
+        self.protect_dark_colors_check.setChecked(True)
+        self.protect_dark_colors_check.setToolTip(
+            "Protects very dark pixels, like black linework or text, from Color Removal.\n"
+            "Turn this off only if you intentionally want to remove a dark/black background."
+        )
+        layout.addWidget(self.protect_dark_colors_check)
+        self._update_color_swatch()
+
+        self.action_section_label = QLabel("Process")
+        self._configure_section_label(self.action_section_label)
+        layout.addWidget(self.action_section_label)
+
+        action_row = QHBoxLayout()
+
+        self.action_combo = QComboBox()
+        self.action_combo.addItems(["Process", "Export"])
+        self.action_combo.setCurrentText("Process")
+        self.action_combo.setToolTip(
+            "Process = preview/background removal only.\n"
+            "Export = final full-resolution output."
+        )
+
+        self.target_combo = QComboBox()
+        self.target_combo.addItems(["Selected", "All"])
+        self.target_combo.setToolTip("Selected means the items with checkmarks.")
+
+        self.run_action_btn = QPushButton("Run")
+        self.run_action_btn.setToolTip("Run the selected Action on the selected Target.")
+        self._configure_action_button(self.run_action_btn)
+
+        action_row.addWidget(self.action_combo, 1)
+        action_row.addWidget(self.target_combo, 1)
+        action_row.addWidget(self.run_action_btn)
+
+        layout.addLayout(action_row)
+
+        self.cancel_btn = QPushButton("Cancel")
+        self.cancel_btn.hide()
+        self.cancel_btn.setToolTip("Stop after the current item finishes.")
+        self._configure_action_button(self.cancel_btn)
+        layout.addWidget(self.cancel_btn)
+
+        layout.addStretch()
+
+    def _build_editor_tab(self):
+        layout = self.editor_layout
+
+        self.tool_section_label = QLabel("Editing Tools")
+        self.tool_section_label.setObjectName("panelTitle")
+        layout.addWidget(self.tool_section_label)
+
+        self.tool_label = QLabel("Tool")
+        self.tool_combo = QComboBox()
+        self.tool_combo.addItems(["Erase", "Restore", "Magic Erase", "Background Erase"])
+        self.tool_combo.setToolTip(
+            "Choose the editing tool.\n"
+            "All tools can use Brush or Smart Selection mode."
+        )
+        layout.addWidget(self.tool_label)
+        layout.addWidget(self.tool_combo)
+
+        self.apply_mode_label = QLabel("Apply Mode")
+        self.apply_mode_combo = QComboBox()
+        self.apply_mode_combo.addItems(["Brush", "Smart Selection"])
+        self.apply_mode_combo.setCurrentText("Brush")
+        self.apply_mode_combo.setToolTip(
+            "Brush = drag across the image.\n"
+            "Smart Selection = apply an intelligent one-shot selection from the clicked point."
+        )
+        layout.addWidget(self.apply_mode_label)
+        layout.addWidget(self.apply_mode_combo)
+
+        self.tool_preset_label = QLabel("Preset")
+        self.tool_preset_combo = QComboBox()
+        self.tool_preset_combo.addItem("(No preset selected)", None)
+        self.tool_preset_apply_btn = QPushButton("Apply Preset")
+        self.tool_preset_apply_btn.setToolTip("Apply the selected preset to the current tool context.")
+        self._configure_action_button(self.tool_preset_apply_btn)
+
+        tool_preset_row = QHBoxLayout()
+        tool_preset_row.addWidget(self.tool_preset_combo, 1)
+        tool_preset_row.addWidget(self.tool_preset_apply_btn)
+
+        layout.addWidget(self.tool_preset_label)
+        layout.addLayout(tool_preset_row)
+
+        self.brush_size_label = QLabel("Brush Size")
+        self.brush_size_row, self.brush_size_slider, self.brush_size_value_box = self._create_slider_row(1, 200)
+        self.brush_size_slider.setValue(40)
+        self._set_tooltip_for_widgets(
+            "Size of the brush area or Smart Selection click area.",
+            self.brush_size_label,
+            self.brush_size_row,
+            self.brush_size_slider,
+            self.brush_size_value_box,
+        )
+        layout.addWidget(self.brush_size_label)
+        layout.addWidget(self.brush_size_row)
+
+        self.softness_label = QLabel("Softness")
+        self.softness_row, self.softness_slider, self.softness_value_box = self._create_slider_row(0, 100)
+        self.softness_slider.setValue(35)
+        self._set_tooltip_for_widgets(
+            "Lower = harder edge. Higher = softer feathered edge.",
+            self.softness_label,
+            self.softness_row,
+            self.softness_slider,
+            self.softness_value_box,
+        )
+        layout.addWidget(self.softness_label)
+        layout.addWidget(self.softness_row)
+
+        self.opacity_label = QLabel("Opacity")
+        self.opacity_row, self.opacity_slider, self.opacity_value_box = self._create_slider_row(1, 100)
+        self.opacity_slider.setValue(100)
+        self._set_tooltip_for_widgets(
+            "Maximum strength of the brush/edit.",
+            self.opacity_label,
+            self.opacity_row,
+            self.opacity_slider,
+            self.opacity_value_box,
+        )
+        layout.addWidget(self.opacity_label)
+        layout.addWidget(self.opacity_row)
+
+        self.flow_label = QLabel("Flow")
+        self.flow_row, self.flow_slider, self.flow_value_box = self._create_slider_row(1, 100)
+        self.flow_slider.setValue(100)
+        self._set_tooltip_for_widgets(
+            "Controls how quickly Erase/Restore brush strokes build up while dragging.\n"
+            "Flow 100 applies full strength immediately. Lower values build gradually.",
+            self.flow_label,
+            self.flow_row,
+            self.flow_slider,
+            self.flow_value_box,
+        )
+        layout.addWidget(self.flow_label)
+        layout.addWidget(self.flow_row)
+
+        self.spacing_label = QLabel("Spacing")
+        self.spacing_row, self.spacing_slider, self.spacing_value_box = self._create_slider_row(1, 100)
+        self.spacing_slider.setValue(1)
+        self._set_tooltip_for_widgets(
+            "Lower values place tool stamps closer together during brush strokes.",
+            self.spacing_label,
+            self.spacing_row,
+            self.spacing_slider,
+            self.spacing_value_box,
+        )
+        layout.addWidget(self.spacing_label)
+        layout.addWidget(self.spacing_row)
+
+        self.tolerance_label = QLabel("Tolerance")
+        self.tolerance_row, self.tolerance_slider, self.tolerance_value_box = self._create_slider_row(0, 255)
+        self.tolerance_slider.setValue(35)
+        self._set_tooltip_for_widgets(
+            "Controls how closely colors must match for Magic Erase and Background Erase.\n"
+            "Lower values affect fewer colors. Higher values affect a wider color range.",
+            self.tolerance_label,
+            self.tolerance_row,
+            self.tolerance_slider,
+            self.tolerance_value_box,
+        )
+        layout.addWidget(self.tolerance_label)
+        layout.addWidget(self.tolerance_row)
+
+        self.magic_mode_label = QLabel("Magic Mode")
+        self.magic_mode_combo = QComboBox()
+        self.magic_mode_combo.addItems(["Connected Region", "Global Match"])
+        self.magic_mode_combo.setCurrentText("Connected Region")
+        self._set_tooltip_for_widgets(
+            "Connected Region affects only the touching matched area.\n"
+            "Global Match affects matching areas across the full preview.",
+            self.magic_mode_label,
+            self.magic_mode_combo,
+        )
+        layout.addWidget(self.magic_mode_label)
+        layout.addWidget(self.magic_mode_combo)
+
+        self.smart_feather_label = QLabel("Selection Feather")
+        self.smart_feather_row, self.smart_feather_slider, self.smart_feather_value_box = self._create_slider_row(0, 25)
+        self.smart_feather_slider.setValue(0)
+        self._set_tooltip_for_widgets(
+            "Softens the edge of Smart Selection results.\n"
+            "Use a small value for cleaner, less jagged selection edges.",
+            self.smart_feather_label,
+            self.smart_feather_row,
+            self.smart_feather_slider,
+            self.smart_feather_value_box,
+        )
+        layout.addWidget(self.smart_feather_label)
+        layout.addWidget(self.smart_feather_row)
+
+        self.smart_expand_label = QLabel("Expand / Contract")
+        self.smart_expand_row, self.smart_expand_slider, self.smart_expand_value_box = self._create_slider_row(-10, 10)
+        self.smart_expand_slider.setValue(1)
+        self._set_tooltip_for_widgets(
+            "Adjusts Smart Selection size after selection.\n"
+            "Negative values contract/shrink the selection. Positive values expand/grow it.",
+            self.smart_expand_label,
+            self.smart_expand_row,
+            self.smart_expand_slider,
+            self.smart_expand_value_box,
+        )
+        layout.addWidget(self.smart_expand_label)
+        layout.addWidget(self.smart_expand_row)
+
+        self.smart_cleanup_holes_checkbox = QCheckBox("Fill Small Holes")
+        self.smart_cleanup_holes_checkbox.setChecked(True)
+        self.smart_cleanup_holes_checkbox.setToolTip(
+            "Fills small transparent holes inside Smart Selection results."
+        )
+        layout.addWidget(self.smart_cleanup_holes_checkbox)
+
+        self.smart_cleanup_speckles_checkbox = QCheckBox("Remove Speckles")
+        self.smart_cleanup_speckles_checkbox.setChecked(True)
+        self.smart_cleanup_speckles_checkbox.setToolTip(
+            "Removes tiny isolated artifacts from Smart Selection results."
+        )
+        layout.addWidget(self.smart_cleanup_speckles_checkbox)
+
+        self.edge_protect_check = QCheckBox("Edge Protect")
+        self.edge_protect_check.setChecked(True)
+        self.edge_protect_check.setToolTip(
+            "Reduce harsh erasing near likely subject edges for Magic Erase and Background Erase."
+        )
+        layout.addWidget(self.edge_protect_check)
+
+        self.cleanup_section_label = QLabel("Cleanup Actions")
+        self.cleanup_section_label.setObjectName("panelTitle")
+        layout.addWidget(self.cleanup_section_label)
+
+        self.cleanup_fill_holes_btn = QPushButton("Fill Small Holes")
+        self.cleanup_fill_holes_btn.setToolTip(
+            "Attempts to fill small transparent holes inside the current edited cutout."
+        )
+        self._configure_action_button(self.cleanup_fill_holes_btn)
+        layout.addWidget(self.cleanup_fill_holes_btn)
+
+        self.cleanup_remove_speckles_btn = QPushButton("Remove Speckles")
+        self.cleanup_remove_speckles_btn.setToolTip(
+            "Attempts to remove tiny isolated visible speckles from the current edit."
+        )
+        self._configure_action_button(self.cleanup_remove_speckles_btn)
+        layout.addWidget(self.cleanup_remove_speckles_btn)
+
+        self.cleanup_decontaminate_edges_btn = QPushButton("Decontaminate Edge Colors")
+        self.cleanup_decontaminate_edges_btn.setToolTip(
+            "Attempts to reduce leftover background color fringing on semi-transparent edges."
+        )
+        self._configure_action_button(self.cleanup_decontaminate_edges_btn)
+        layout.addWidget(self.cleanup_decontaminate_edges_btn)
+
+        self.cleanup_refine_alpha_btn = QPushButton("Refine Alpha Edge")
+        self.cleanup_refine_alpha_btn.setToolTip(
+            "Attempts to smooth semi-transparent alpha edges after manual edits."
+        )
+        self._configure_action_button(self.cleanup_refine_alpha_btn)
+        layout.addWidget(self.cleanup_refine_alpha_btn)
+
+        self.cleanup_blend_edges_btn = QPushButton("Blend Model/Edit Seam")
+        self.cleanup_blend_edges_btn.setToolTip(
+            "Smooths visible seams where AI/model removal and manual editor erase meet."
+        )
+        self._configure_action_button(self.cleanup_blend_edges_btn)
+        layout.addWidget(self.cleanup_blend_edges_btn)
+
+        self.cleanup_restore_alpha_btn = QPushButton("Restore Original Edge Alpha")
+        self.cleanup_restore_alpha_btn.setToolTip(
+            "Restores edge transparency from the original/model result when manual edits make edges too harsh."
+        )
+        self._configure_action_button(self.cleanup_restore_alpha_btn)
+        layout.addWidget(self.cleanup_restore_alpha_btn)
+
+        layout.addStretch()
+
+    def _build_export_tab(self):
+        layout = self.export_layout
+
+        self.output_section_label = QLabel("Output")
+        self._configure_section_label(self.output_section_label)
+        layout.addWidget(self.output_section_label)
+
+        self.output_format_label = QLabel("Output Format")
+        self.output_format_combo = QComboBox()
+        self.output_format_combo.addItems(["PNG", "JPG", "WEBP"])
+        self.output_format_combo.setCurrentText("PNG")
+        self.output_format_combo.setToolTip("Choose the final exported file format.")
+        layout.addWidget(self.output_format_label)
+        layout.addWidget(self.output_format_combo)
+
+        self.background_mode_label = QLabel("Background Mode")
+        self.background_mode_combo = QComboBox()
+        self.background_mode_combo.addItems(["Transparent", "Solid Color"])
+        self.background_mode_combo.setCurrentText("Transparent")
+        self.background_mode_combo.setToolTip(
+            "Transparent keeps the cutout background transparent.\n"
+            "Solid Color fills the background with a chosen color."
+        )
+        layout.addWidget(self.background_mode_label)
+        layout.addWidget(self.background_mode_combo)
+
+        self.background_color_label = QLabel("Solid Background Color")
+        self.background_color_combo = QComboBox()
+        self.background_color_combo.addItems(["White", "Black"])
+        self.background_color_combo.setToolTip("Used only when Background Mode is set to Solid Color.")
+        layout.addWidget(self.background_color_label)
+        layout.addWidget(self.background_color_combo)
+
+        self.output_dir_label = QLabel("Output Directory")
+        self.output_dir_edit = QLineEdit()
+        self.output_dir_edit.setPlaceholderText("Choose a folder for exported files")
+        self.output_dir_edit.setToolTip(
+            "Choose or type the export folder.\n"
+            "If the folder does not exist, export will ask whether to create it."
+        )
+
+        self.output_dir_btn = QPushButton("Choose Output Folder")
+        self.output_dir_btn.setToolTip(
+            "Pick the export folder.\n"
+            "If you type a missing folder manually, export will ask whether to create it."
+        )
+
+        self.open_output_btn = QPushButton("Open Output Folder")
+        self.open_output_btn.setToolTip("Open the current export folder.")
+
+        self._configure_action_button(self.output_dir_btn)
+        self._configure_action_button(self.open_output_btn)
+
+        output_btn_row = QHBoxLayout()
+        output_btn_row.setSpacing(6)
+        output_btn_row.addWidget(self.output_dir_btn)
+        output_btn_row.addWidget(self.open_output_btn)
+
+        layout.addWidget(self.output_dir_label)
+        layout.addWidget(self.output_dir_edit)
+        layout.addLayout(output_btn_row)
+
+        self.naming_label = QLabel("Filename Suffix")
+        self.naming_edit = QLineEdit("_nobg")
+        self.naming_edit.setToolTip(
+            "This text is added to the exported filename.\n"
+            "The final filename preview below updates from the selected backend, model, suffix, and format."
+        )
+
+        self.include_model_suffix_check = QCheckBox("Include backend/model in filename")
+        self.include_model_suffix_check.setChecked(True)
+        self.include_model_suffix_check.setToolTip(
+            "When enabled, exported filenames include the selected backend/model.\n"
+            "For rembg, this uses the selected model name.\n"
+            "For InSPyReNet and MODNet, this uses the backend name."
+        )
+
+        self.suffix_preview_label = QLabel("")
+        self.suffix_preview_label.setWordWrap(True)
+        self.suffix_preview_label.setVisible(False)
+
+        self.filename_preview_label = QLabel(
+            "Final filename preview: example_image_u2netp_nobg.png"
+        )
+        self.filename_preview_label.setWordWrap(True)
+        self.filename_preview_label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+        self.filename_preview_label.setStyleSheet("color: #cfcfcf; font-size: 11px;")
+        self.filename_preview_label.setMinimumHeight(44)
+        self.filename_preview_label.setMaximumHeight(90)
+        self.filename_preview_label.setSizePolicy(
+            QSizePolicy.Policy.Expanding,
+            QSizePolicy.Policy.Preferred,
+        )
+
+        layout.addWidget(self.naming_label)
+        layout.addWidget(self.naming_edit)
+        layout.addWidget(self.include_model_suffix_check)
+        layout.addWidget(self.suffix_preview_label)
+        layout.addWidget(self.filename_preview_label, 0, Qt.AlignmentFlag.AlignTop)
+
+        self.export_zip_check = QCheckBox("Export successful results as ZIP")
+        self.export_zip_check.setToolTip("For batch export, also create a ZIP containing the exported files.")
+        layout.addWidget(self.export_zip_check)
+
+        self.overwrite_exports_check = QCheckBox("Overwrite existing exports")
+        self.overwrite_exports_check.setToolTip("Reuse the same output filename instead of creating numbered duplicates.")
+        layout.addWidget(self.overwrite_exports_check)
+
+        self.skip_exported_check = QCheckBox("Skip already exported items")
+        self.skip_exported_check.setToolTip("During batch export, skip items already marked as exported.")
+        layout.addWidget(self.skip_exported_check)
+
+        self.open_output_after_export_check = QCheckBox("Open output folder when export finishes")
+        self.open_output_after_export_check.setToolTip("Open the export folder automatically after a successful export batch.")
+        layout.addWidget(self.open_output_after_export_check)
+
+        self.skip_processed_check = QCheckBox("Skip already processed items")
+        self.skip_processed_check.setToolTip("During batch process, skip items that already have a processed preview.")
+        layout.addWidget(self.skip_processed_check)
+        
+        layout.addStretch()
+
+    def _connect_internal_signals(self):
+        self.output_dir_btn.clicked.connect(self.choose_output_dir)
+        self.open_output_btn.clicked.connect(self.open_output_folder)
+        self.backend_reset_btn.clicked.connect(self.reset_current_backend_settings)
+        self.pick_color_btn.clicked.connect(self.choose_removal_color)
+        self.color_hex_edit.editingFinished.connect(self._apply_color_hex_from_edit)
+        self.pick_preview_color_btn.clicked.connect(self.preview_color_pick_requested.emit)
+        self.color_r_spin.valueChanged.connect(self._apply_rgb_from_spinboxes)
+        self.color_g_spin.valueChanged.connect(self._apply_rgb_from_spinboxes)
+        self.color_b_spin.valueChanged.connect(self._apply_rgb_from_spinboxes)
+        self.color_c_spin.valueChanged.connect(self._apply_cmyk_from_spinboxes)
+        self.color_m_spin.valueChanged.connect(self._apply_cmyk_from_spinboxes)
+        self.color_y_spin.valueChanged.connect(self._apply_cmyk_from_spinboxes)
+        self.color_k_spin.valueChanged.connect(self._apply_cmyk_from_spinboxes)
+
+        self.removal_mode_combo.currentTextChanged.connect(self.update_mode_visibility)
+        self.removal_mode_combo.currentTextChanged.connect(self.update_suffix_preview)
+        self.backend_combo.currentTextChanged.connect(self.update_backend_hint)
+        self.backend_combo.currentTextChanged.connect(self.update_backend_visibility)
+        self.backend_combo.currentTextChanged.connect(self.update_suffix_preview)
+        self.background_mode_combo.currentTextChanged.connect(self.update_background_visibility)
+
+        self.tool_combo.currentTextChanged.connect(self._on_tool_changed)
+        self.apply_mode_combo.currentTextChanged.connect(self._on_apply_mode_changed)
+
+        self.model_combo.currentTextChanged.connect(self.update_model_hint)
+        self.model_combo.currentTextChanged.connect(self.update_suffix_preview)
+        self.naming_edit.textChanged.connect(self.update_suffix_preview)
+        self.include_model_suffix_check.toggled.connect(self.update_suffix_preview)
+
+        self.tool_preset_apply_btn.clicked.connect(self._emit_tool_preset_apply_requested)
+        if hasattr(self, "pick_from_preview_btn"):
+            self.pick_from_preview_btn.clicked.connect(self.color_pick_from_preview_requested.emit)
+
+
+    def _apply_dropper_icon_to_preview_button(self):
+        """Use the local dropper.png image for the Color Removal preview picker button."""
+        if not hasattr(self, "pick_from_preview_btn"):
+            return
+
+        icon_path = Path(__file__).resolve().parents[1] / "dropper.png"
+
+        self.pick_from_preview_btn.setText("")
+        self.pick_from_preview_btn.setFixedWidth(42)
+        self.pick_from_preview_btn.setMinimumHeight(30)
+        self.pick_from_preview_btn.setToolTip(
+            "Pick a removal color by clicking the preview image."
+        )
+
+        if icon_path.exists():
+            self.pick_from_preview_btn.setIcon(QIcon(str(icon_path)))
+            self.pick_from_preview_btn.setIconSize(QSize(24, 24))
+        else:
+            self.pick_from_preview_btn.setText("Dropper")
+            self.pick_from_preview_btn.setFixedWidth(80)
+
+
+    def _apply_dropper_icon_to_preview_button(self):
+        if not hasattr(self, "pick_from_preview_btn"):
+            return
+
+        icon_path = Path.home() / "MyBGRemover" / "dropper.png"
+
+        self.pick_from_preview_btn.setText("")
+        self.pick_from_preview_btn.setFixedSize(44, 36)
+        self.pick_from_preview_btn.setMinimumHeight(36)
+        self.pick_from_preview_btn.setMaximumHeight(36)
+        self.pick_from_preview_btn.setStyleSheet("padding: 0px;")
+        self.pick_from_preview_btn.setToolTip(
+            "Pick a removal color from the preview image.\n"
+            "Click this button, then click the color you want to remove."
+        )
+
+        if icon_path.exists():
+            self.pick_from_preview_btn.setIcon(QIcon(str(icon_path)))
+            self.pick_from_preview_btn.setIconSize(QSize(32, 32))
+        else:
+            self.pick_from_preview_btn.setText("⌖")
+            self.pick_from_preview_btn.setIcon(QIcon())
+
+
+    def _apply_color_removal_tooltips(self):
+        tooltip_map = {
+            "color_hex_edit": (
+                "Hex color to remove.\n"
+                "Example: #FFFFFF removes white.\n"
+                "You can type the # or leave it out."
+            ),
+            "color_swatch_btn": (
+                "Current Color Removal target color.\n"
+                "Click this square to open the normal color picker."
+            ),
+            "pick_from_preview_btn": (
+                "Pick a removal color from the preview image.\n"
+                "Click this button, then click a pixel in the preview."
+            ),
+            "color_match_mode_combo": (
+                "Connected Edges removes matching color connected to the image edges.\n"
+                "Global Match removes matching color everywhere in the image."
+            ),
+            "color_edge_feather_slider": (
+                "Softens the edge of the removed color area.\n"
+                "Try 1–3 for cleaner edges. Higher values can make edges too soft."
+            ),
+            "color_spill_cleanup_check": (
+                "Reduces leftover color tint around semi-transparent edges after Color Removal."
+            ),
+            "threshold_slider": (
+                "Controls how close a pixel color must be to the selected color.\n"
+                "Lower = only very similar colors are removed.\n"
+                "Higher = a wider range of nearby shades is removed."
+            ),
+        }
+
+        for attr_name, tooltip in tooltip_map.items():
+            widget = getattr(self, attr_name, None)
+            if widget is not None:
+                widget.setToolTip(tooltip)
+
+        for attr_name in ("color_r_spin", "color_g_spin", "color_b_spin"):
+            widget = getattr(self, attr_name, None)
+            if widget is not None:
+                widget.setToolTip("RGB value for the removal color. Use values from 0 to 255.")
+
+        for attr_name in ("color_c_spin", "color_m_spin", "color_y_spin", "color_k_spin"):
+            widget = getattr(self, attr_name, None)
+            if widget is not None:
+                widget.setToolTip("CMYK value for the removal color. Use values from 0 to 100.")
+
+        rembg_fg_tip = (
+            "Alpha Matting Foreground Threshold.\n"
+            "This controls how confident rembg must be before keeping a pixel as the subject/foreground.\n"
+            "Higher values keep only stronger foreground pixels and can remove fuzzy edge details.\n"
+            "Lower values keep more edge detail, but may leave more background bits attached."
+        )
+        rembg_bg_tip = (
+            "Alpha Matting Background Threshold.\n"
+            "This controls how easily rembg treats pixels as definite background.\n"
+            "Higher values remove more possible background, but can cut into soft subject edges.\n"
+            "Lower values are more cautious and can leave more background haze around the subject."
+        )
+
+        for attr_name in ("rembg_fg_label", "rembg_fg_row", "rembg_fg_slider", "rembg_fg_value_box"):
+            widget = getattr(self, attr_name, None)
+            if widget is not None:
+                widget.setToolTip(rembg_fg_tip)
+
+        for attr_name in ("rembg_bg_label", "rembg_bg_row", "rembg_bg_slider", "rembg_bg_value_box"):
+            widget = getattr(self, attr_name, None)
+            if widget is not None:
+                widget.setToolTip(rembg_bg_tip)
+
+
+    def _apply_dropper_icon_to_preview_button(self):
+        if not hasattr(self, "pick_from_preview_btn"):
+            return
+
+        icon_path = Path.home() / "MyBGRemover" / "dropper.png"
+
+        self.pick_from_preview_btn.setText("")
+        self.pick_from_preview_btn.setFixedSize(54, 42)
+        self.pick_from_preview_btn.setMinimumSize(54, 42)
+        self.pick_from_preview_btn.setMaximumHeight(42)
+        self.pick_from_preview_btn.setStyleSheet("padding: 1px;")
+        self.pick_from_preview_btn.setToolTip(
+            "Pick a removal color from the preview image.\n"
+            "Click this button, then click a pixel in the preview."
+        )
+
+        if icon_path.exists():
+            self.pick_from_preview_btn.setIcon(QIcon(str(icon_path)))
+            self.pick_from_preview_btn.setIconSize(QSize(38, 38))
+        else:
+            self.pick_from_preview_btn.setIcon(QIcon())
+            self.pick_from_preview_btn.setText("Pick")
+
+
+    def _apply_color_removal_tooltips(self):
+        color_tooltips = {
+            "color_hex_edit": (
+                "Hex color to remove.\n"
+                "Example: #FFFFFF removes white.\n"
+                "You can type the # or leave it out."
+            ),
+            "color_swatch_btn": (
+                "Current Color Removal target color.\n"
+                "Click this square to open the normal color picker."
+            ),
+            "pick_from_preview_btn": (
+                "Pick a removal color from the preview image.\n"
+                "Click this button, then click a pixel in the preview."
+            ),
+            "color_match_mode_combo": (
+                "Connected Edges removes matching color connected to the image edges.\n"
+                "Global Match removes matching color everywhere in the image."
+            ),
+            "color_edge_feather_slider": (
+                "Softens the edge of the removed color area.\n"
+                "Try 1–3 for cleaner edges. Higher values can make edges too soft."
+            ),
+            "color_spill_cleanup_check": (
+                "Reduces leftover color tint around semi-transparent edges after Color Removal."
+            ),
+            "threshold_slider": (
+                "Controls how close a pixel color must be to the selected color.\n"
+                "Lower = only very similar colors are removed.\n"
+                "Higher = more nearby shades are removed."
+            ),
+        }
+
+        for attr_name, tooltip in color_tooltips.items():
+            widget = getattr(self, attr_name, None)
+            if widget is not None:
+                widget.setToolTip(tooltip)
+
+        for attr_name in ("color_r_spin", "color_g_spin", "color_b_spin"):
+            widget = getattr(self, attr_name, None)
+            if widget is not None:
+                widget.setToolTip("RGB value for the removal color. Use 0 to 255.")
+
+        for attr_name in ("color_c_spin", "color_m_spin", "color_y_spin", "color_k_spin"):
+            widget = getattr(self, attr_name, None)
+            if widget is not None:
+                widget.setToolTip("CMYK value for the removal color. Use 0 to 100.")
+
+        fg_tip = (
+            "Alpha Matting Foreground Threshold.\n"
+            "Controls how certain rembg must be before keeping a pixel as the subject.\n"
+            "Higher = stricter subject detection, which can remove fuzzy hair/edge details.\n"
+            "Lower = keeps more soft detail, but can leave more background attached."
+        )
+        bg_tip = (
+            "Alpha Matting Background Threshold.\n"
+            "Controls how easily rembg treats pixels as definite background.\n"
+            "Higher = removes more possible background, but can cut into soft subject edges.\n"
+            "Lower = more cautious removal, but can leave haze or background fringe."
+        )
+
+        for attr_name in ("rembg_fg_label", "rembg_fg_row", "rembg_fg_slider", "rembg_fg_value_box"):
+            widget = getattr(self, attr_name, None)
+            if widget is not None:
+                widget.setToolTip(fg_tip)
+
+        for attr_name in ("rembg_bg_label", "rembg_bg_row", "rembg_bg_slider", "rembg_bg_value_box"):
+            widget = getattr(self, attr_name, None)
+            if widget is not None:
+                widget.setToolTip(bg_tip)
+
+
+    def _apply_dropper_icon_to_preview_button(self):
+        if not hasattr(self, "pick_from_preview_btn"):
+            return
+
+        icon_path = Path.home() / "MyBGRemover" / "dropper.png"
+
+        self.pick_from_preview_btn.setText("")
+        self.pick_from_preview_btn.setFixedSize(54, 42)
+        self.pick_from_preview_btn.setMinimumSize(54, 42)
+        self.pick_from_preview_btn.setMaximumHeight(42)
+        self.pick_from_preview_btn.setStyleSheet("padding: 1px;")
+        self.pick_from_preview_btn.setToolTip(
+            "Pick a removal color from the preview image.\n"
+            "Click this button, then click a pixel in the preview."
+        )
+
+        if icon_path.exists():
+            self.pick_from_preview_btn.setIcon(QIcon(str(icon_path)))
+            self.pick_from_preview_btn.setIconSize(QSize(38, 38))
+        else:
+            self.pick_from_preview_btn.setIcon(QIcon())
+            self.pick_from_preview_btn.setText("Pick")
+
+
+    def _apply_color_removal_tooltips(self):
+        color_tooltips = {
+            "color_hex_edit": (
+                "Hex color to remove.\n"
+                "Example: #FFFFFF removes white.\n"
+                "You can type the # or leave it out."
+            ),
+            "color_swatch_btn": (
+                "Current Color Removal target color.\n"
+                "Click this square to open the normal color picker."
+            ),
+            "pick_from_preview_btn": (
+                "Pick a removal color from the preview image.\n"
+                "Click this button, then click a pixel in the preview."
+            ),
+            "color_match_mode_combo": (
+                "Connected Edges removes matching color connected to the image edges.\n"
+                "Global Match removes matching color everywhere in the image."
+            ),
+            "color_edge_feather_slider": (
+                "Softens the edge of the removed color area.\n"
+                "Try 1–3 for cleaner edges. Higher values can make edges too soft."
+            ),
+            "color_spill_cleanup_check": (
+                "Reduces leftover color tint around semi-transparent edges after Color Removal."
+            ),
+            "threshold_slider": (
+                "Controls how close a pixel color must be to the selected color.\n"
+                "Lower = only very similar colors are removed.\n"
+                "Higher = more nearby shades are removed."
+            ),
+        }
+
+        for attr_name, tooltip in color_tooltips.items():
+            widget = getattr(self, attr_name, None)
+            if widget is not None:
+                widget.setToolTip(tooltip)
+
+        for attr_name in ("color_r_spin", "color_g_spin", "color_b_spin"):
+            widget = getattr(self, attr_name, None)
+            if widget is not None:
+                widget.setToolTip("RGB value for the removal color. Use 0 to 255.")
+
+        for attr_name in ("color_c_spin", "color_m_spin", "color_y_spin", "color_k_spin"):
+            widget = getattr(self, attr_name, None)
+            if widget is not None:
+                widget.setToolTip("CMYK value for the removal color. Use 0 to 100.")
+
+        fg_tip = (
+            "Alpha Matting Foreground Threshold.\n"
+            "Controls how certain rembg must be before keeping a pixel as the subject.\n"
+            "Higher = stricter subject detection, which can remove fuzzy hair/edge details.\n"
+            "Lower = keeps more soft detail, but can leave more background attached."
+        )
+        bg_tip = (
+            "Alpha Matting Background Threshold.\n"
+            "Controls how easily rembg treats pixels as definite background.\n"
+            "Higher = removes more possible background, but can cut into soft subject edges.\n"
+            "Lower = more cautious removal, but can leave haze or background fringe."
+        )
+
+        for attr_name in ("rembg_fg_label", "rembg_fg_row", "rembg_fg_slider", "rembg_fg_value_box"):
+            widget = getattr(self, attr_name, None)
+            if widget is not None:
+                widget.setToolTip(fg_tip)
+
+        for attr_name in ("rembg_bg_label", "rembg_bg_row", "rembg_bg_slider", "rembg_bg_value_box"):
+            widget = getattr(self, attr_name, None)
+            if widget is not None:
+                widget.setToolTip(bg_tip)
+
+
+    def _apply_dropper_icon_to_preview_button(self):
+        if not hasattr(self, "pick_from_preview_btn"):
+            return
+
+        icon_path = Path.home() / "MyBGRemover" / "dropper.png"
+
+        self.pick_from_preview_btn.setText("")
+        self.pick_from_preview_btn.setFixedSize(54, 42)
+        self.pick_from_preview_btn.setMinimumSize(54, 42)
+        self.pick_from_preview_btn.setMaximumHeight(42)
+        self.pick_from_preview_btn.setStyleSheet("padding: 1px;")
+        self.pick_from_preview_btn.setToolTip(
+            "Pick a removal color from the preview image.\n"
+            "Click this button, then click a pixel in the preview."
+        )
+
+        if icon_path.exists():
+            self.pick_from_preview_btn.setIcon(QIcon(str(icon_path)))
+            self.pick_from_preview_btn.setIconSize(QSize(38, 38))
+        else:
+            self.pick_from_preview_btn.setIcon(QIcon())
+            self.pick_from_preview_btn.setText("Pick")
+
+
+    def _apply_color_removal_tooltips(self):
+        color_tooltips = {
+            "color_hex_edit": (
+                "Hex color to remove.\n"
+                "Example: #FFFFFF removes white.\n"
+                "You can type the # or leave it out."
+            ),
+            "color_swatch_btn": (
+                "Current Color Removal target color.\n"
+                "Click this square to open the normal color picker."
+            ),
+            "pick_from_preview_btn": (
+                "Pick a removal color from the preview image.\n"
+                "Click this button, then click a pixel in the preview."
+            ),
+            "color_match_mode_combo": (
+                "Connected Edges removes matching color connected to the image edges.\n"
+                "Global Match removes matching color everywhere in the image."
+            ),
+            "color_edge_feather_slider": (
+                "Softens the edge of the removed color area.\n"
+                "Try 1–3 for cleaner edges. Higher values can make edges too soft."
+            ),
+            "color_spill_cleanup_check": (
+                "Reduces leftover color tint around semi-transparent edges after Color Removal."
+            ),
+            "threshold_slider": (
+                "Controls how close a pixel color must be to the selected color.\n"
+                "Lower = only very similar colors are removed.\n"
+                "Higher = more nearby shades are removed."
+            ),
+        }
+
+        for attr_name, tooltip in color_tooltips.items():
+            widget = getattr(self, attr_name, None)
+            if widget is not None:
+                widget.setToolTip(tooltip)
+
+        for attr_name in ("color_r_spin", "color_g_spin", "color_b_spin"):
+            widget = getattr(self, attr_name, None)
+            if widget is not None:
+                widget.setToolTip("RGB value for the removal color. Use 0 to 255.")
+
+        for attr_name in ("color_c_spin", "color_m_spin", "color_y_spin", "color_k_spin"):
+            widget = getattr(self, attr_name, None)
+            if widget is not None:
+                widget.setToolTip("CMYK value for the removal color. Use 0 to 100.")
+
+        fg_tip = (
+            "Alpha Matting Foreground Threshold.\n"
+            "Controls how certain rembg must be before keeping a pixel as the subject.\n"
+            "Higher = stricter subject detection, which can remove fuzzy hair/edge details.\n"
+            "Lower = keeps more soft detail, but can leave more background attached."
+        )
+        bg_tip = (
+            "Alpha Matting Background Threshold.\n"
+            "Controls how easily rembg treats pixels as definite background.\n"
+            "Higher = removes more possible background, but can cut into soft subject edges.\n"
+            "Lower = more cautious removal, but can leave haze or background fringe."
+        )
+
+        for attr_name in ("rembg_fg_label", "rembg_fg_row", "rembg_fg_slider", "rembg_fg_value_box"):
+            widget = getattr(self, attr_name, None)
+            if widget is not None:
+                widget.setToolTip(fg_tip)
+
+        for attr_name in ("rembg_bg_label", "rembg_bg_row", "rembg_bg_slider", "rembg_bg_value_box"):
+            widget = getattr(self, attr_name, None)
+            if widget is not None:
+                widget.setToolTip(bg_tip)
+
+
+    def _apply_dropper_icon_to_preview_button(self):
+        if not hasattr(self, "pick_from_preview_btn"):
+            return
+
+        icon_path = Path("/home/yma/MyBGRemover/dropper.png")
+
+        self.pick_from_preview_btn.setText("")
+        self.pick_from_preview_btn.setFixedSize(64, 50)
+        self.pick_from_preview_btn.setMinimumSize(64, 50)
+        self.pick_from_preview_btn.setMaximumSize(64, 50)
+        self.pick_from_preview_btn.setStyleSheet("padding: 0px; margin: 0px;")
+        self.pick_from_preview_btn.setToolTip(
+            "Pick a removal color from the preview image.\n"
+            "Click this button, then click the color you want to remove in the preview."
+        )
+
+        if icon_path.exists():
+            pixmap = QPixmap(str(icon_path))
+            if not pixmap.isNull():
+                self.pick_from_preview_btn.setIcon(QIcon(pixmap))
+                self.pick_from_preview_btn.setIconSize(QSize(46, 46))
+                return
+
+        self.pick_from_preview_btn.setIcon(QIcon())
+        self.pick_from_preview_btn.setText("Pick")
+
+
+    def _apply_color_removal_tooltips(self):
+        tooltip_map = {
+            "color_hex_edit": "Hex color to remove. Example: #FFFFFF removes white.",
+            "color_swatch_btn": "Current Color Removal target color. Click this square to open the normal color picker.",
+            "pick_from_preview_btn": "Pick a removal color from the preview image. Click this button, then click a pixel in the preview.",
+            "color_match_mode_combo": "Connected Edges removes matching color connected to image edges. Global Match removes matching color everywhere.",
+            "color_edge_feather_slider": "Softens the edge of the removed color area. Try 1–3 for cleaner edges.",
+            "color_spill_slider": "Color Spill Reduction controls how strongly leftover selected-color tint is reduced on semi-transparent edge pixels.",
+            "threshold_slider": "Lower threshold removes only very similar colors. Higher threshold removes a wider range of nearby shades.",
+        }
+
+        for attr_name, tooltip in tooltip_map.items():
+            widget = getattr(self, attr_name, None)
+            if widget is not None:
+                widget.setToolTip(tooltip)
+
+        fg_tip = (
+            "Alpha Matting Foreground Threshold.\n"
+            "Controls how certain rembg must be before keeping a pixel as the subject.\n"
+            "Higher = stricter subject detection, which can remove fuzzy hair/edge details.\n"
+            "Lower = keeps more soft detail, but can leave more background attached."
+        )
+        bg_tip = (
+            "Alpha Matting Background Threshold.\n"
+            "Controls how easily rembg treats pixels as definite background.\n"
+            "Higher = removes more possible background, but can cut into soft subject edges.\n"
+            "Lower = more cautious removal, but can leave haze or background fringe."
+        )
+
+        for attr_name in ("rembg_fg_label", "rembg_fg_row", "rembg_fg_slider", "rembg_fg_value_box"):
+            widget = getattr(self, attr_name, None)
+            if widget is not None:
+                widget.setToolTip(fg_tip)
+
+        for attr_name in ("rembg_bg_label", "rembg_bg_row", "rembg_bg_slider", "rembg_bg_value_box"):
+            widget = getattr(self, attr_name, None)
+            if widget is not None:
+                widget.setToolTip(bg_tip)
+
+
+    def _apply_dropper_icon_to_preview_button(self):
+        if not hasattr(self, "pick_from_preview_btn"):
+            return
+
+        self.pick_from_preview_btn.setIcon(QIcon())
+        self.pick_from_preview_btn.setText("⌕")
+        self.pick_from_preview_btn.setFixedSize(52, 42)
+        self.pick_from_preview_btn.setMinimumSize(52, 42)
+        self.pick_from_preview_btn.setMaximumSize(52, 42)
+        self.pick_from_preview_btn.setStyleSheet(
+            "QPushButton { padding: 0px; margin: 0px; font-size: 28px; font-weight: bold; }"
+        )
+        self.pick_from_preview_btn.setToolTip(
+            "Pick a removal color from the preview image.\n"
+            "Click this button, then click a pixel in the preview."
+        )
+
+
+    def _apply_dropper_icon_to_preview_button(self):
+        if not hasattr(self, "pick_from_preview_btn"):
+            return
+
+        self.pick_from_preview_btn.setIcon(QIcon())
+        self.pick_from_preview_btn.setText("⌕")
+        self.pick_from_preview_btn.setFixedSize(56, 46)
+        self.pick_from_preview_btn.setMinimumSize(56, 46)
+        self.pick_from_preview_btn.setMaximumSize(56, 46)
+        self.pick_from_preview_btn.setStyleSheet(
+            "QPushButton { padding: 0px; margin: 0px; font-size: 38px; font-weight: bold; line-height: 42px; }"
+        )
+        self.pick_from_preview_btn.setToolTip(
+            "Pick a removal color from the preview image.\n"
+            "Click this button, then click a pixel in the preview."
+        )
+
+
+    def _install_scroll_wheel_guard(self):
+        guarded_widgets = []
+        guarded_widgets.extend(self.findChildren(QComboBox))
+        guarded_widgets.extend(self.findChildren(QSpinBox))
+        guarded_widgets.extend(self.findChildren(QSlider))
+
+        for widget in guarded_widgets:
+            widget.installEventFilter(self)
+            widget.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
+
+    def eventFilter(self, watched, event):
+        if event.type() == QEvent.Type.Wheel and isinstance(watched, (QComboBox, QSpinBox, QSlider)):
+            return True
+
+        return super().eventFilter(watched, event)
+
+
+    def _insert_above_final_stretch(self, layout, widget):
+        insert_index = layout.count()
+
+        if insert_index > 0:
+            last_item = layout.itemAt(insert_index - 1)
+            if last_item is not None and last_item.spacerItem() is not None:
+                insert_index -= 1
+
+        layout.insertWidget(insert_index, widget)
+
+    def _make_target_action_row(self, target_combo, action_button):
+        row_widget = QWidget()
+        row_layout = QHBoxLayout(row_widget)
+        row_layout.setContentsMargins(0, 0, 0, 0)
+        row_layout.setSpacing(6)
+
+        target_combo.addItems(["Selected", "All"])
+        target_combo.setToolTip(
+            "Choose whether this action uses only checked/selected files or every loaded file."
+        )
+
+        action_button.setMinimumHeight(32)
+        action_button.setToolTip("Run this action using the selected target.")
+
+        row_layout.addWidget(target_combo, 1)
+        row_layout.addWidget(action_button, 1)
+
+        return row_widget
+
+    def _hide_old_process_export_action_row(self):
+        for attr_name in (
+            "action_combo",
+            "target_combo",
+            "run_action_btn",
+            "action_label",
+            "target_label",
+            "run_action_label",
+            "action_section_label",
+        ):
+            widget = getattr(self, attr_name, None)
+            if widget is not None:
+                widget.hide()
+
+    def _ensure_split_process_export_controls(self):
+        if hasattr(self, "process_action_btn") and hasattr(self, "export_action_btn"):
+            return
+
+        self._hide_old_process_export_action_row()
+
+        self.process_section_label = QLabel("Process")
+        self._configure_section_label(self.process_section_label)
+
+        self.process_target_combo = QComboBox()
+        self.process_action_btn = QPushButton("Process")
+        self._configure_action_button(self.process_action_btn)
+
+        self.process_action_row = self._make_target_action_row(
+            self.process_target_combo,
+            self.process_action_btn,
+        )
+        self.process_action_row.setToolTip(
+            "Process creates or updates the preview/background-removal result for the chosen images."
+        )
+
+        self.export_section_label = QLabel("Export")
+        self._configure_section_label(self.export_section_label)
+
+        self.export_target_combo = QComboBox()
+        self.export_action_btn = QPushButton("Export")
+        self._configure_action_button(self.export_action_btn)
+
+        self.export_action_row = self._make_target_action_row(
+            self.export_target_combo,
+            self.export_action_btn,
+        )
+        self.export_action_row.setToolTip(
+            "Export saves the finished full-resolution output files using the Export tab settings."
+        )
+
+        self._insert_above_final_stretch(self.settings_layout, self.process_section_label)
+        self._insert_above_final_stretch(self.settings_layout, self.process_action_row)
+
+        self._insert_above_final_stretch(self.export_layout, self.export_section_label)
+        self._insert_above_final_stretch(self.export_layout, self.export_action_row)
+
+    def _apply_remaining_color_removal_tooltips(self):
+        tooltip_map = {
+            "color_hex_edit": (
+                "Hex color to remove. Example: #FFFFFF removes white. "
+                "You can type the # or leave it out."
+            ),
+            "color_swatch_btn": (
+                "Current Color Removal target color. Click this square to open the normal color picker."
+            ),
+            "pick_from_preview_btn": (
+                "Pick a removal color from the preview image. Click this button, then click a pixel in the preview."
+            ),
+            "color_match_mode_combo": (
+                "Connected Edges removes matching color connected to the image edges. "
+                "Global Match removes matching color everywhere in the image."
+            ),
+            "color_edge_feather_slider": (
+                "Softens the edge of the removed color area. Try 1 to 3 for cleaner edges. "
+                "Higher values can make edges too soft."
+            ),
+            "color_spill_slider": (
+                "Color Spill Reduction controls how strongly leftover selected-color tint is reduced on semi-transparent edge pixels."
+            ),
+            "threshold_slider": (
+                "Color Removal tolerance. Lower values remove only very similar colors. "
+                "Higher values remove a wider range of nearby shades."
+            ),
+        }
+
+        for attr_name, tooltip in tooltip_map.items():
+            widget = getattr(self, attr_name, None)
+            if widget is not None:
+                widget.setToolTip(tooltip)
+
+        for attr_name in ("color_r_spin", "color_g_spin", "color_b_spin"):
+            widget = getattr(self, attr_name, None)
+            if widget is not None:
+                widget.setToolTip("RGB channel for the removal color. Use 0 to 255.")
+
+        for attr_name in ("color_c_spin", "color_m_spin", "color_y_spin", "color_k_spin"):
+            widget = getattr(self, attr_name, None)
+            if widget is not None:
+                widget.setToolTip("CMYK channel for the removal color. Use 0 to 100.")
+
+    def _set_tooltip_for_widgets(self, tooltip: str, *widgets):
+        for widget in widgets:
+            if widget is not None:
+                widget.setToolTip(tooltip)
+
+    def _normalize_hex_color_text(self, text: str) -> str | None:
+        clean = str(text).strip().upper()
+
+        if clean.startswith("#"):
+            clean = clean[1:]
+
+        if len(clean) == 3:
+            clean = "".join(ch * 2 for ch in clean)
+
+        if len(clean) != 6:
+            return None
+
+        valid_chars = "0123456789ABCDEF"
+        if any(ch not in valid_chars for ch in clean):
+            return None
+
+        return f"#{clean}"
+
+    def _rgb_from_hex_text(self, text: str) -> tuple[int, int, int] | None:
+        normalized = self._normalize_hex_color_text(text)
+        if normalized is None:
+            return None
+
+        clean = normalized.lstrip("#")
+        return (
+            int(clean[0:2], 16),
+            int(clean[2:4], 16),
+            int(clean[4:6], 16),
+        )
+
+    def _hex_from_rgb(self, rgb: tuple[int, int, int]) -> str:
+        r, g, b = rgb
+        return f"#{max(0, min(255, int(r))):02X}{max(0, min(255, int(g))):02X}{max(0, min(255, int(b))):02X}"
+
+    def _cmyk_from_rgb(self, rgb: tuple[int, int, int]) -> tuple[int, int, int, int]:
+        red, green, blue = [max(0, min(255, int(value))) for value in rgb]
+        if red == 0 and green == 0 and blue == 0:
+            return 0, 0, 0, 100
+
+        r = red / 255.0
+        g = green / 255.0
+        b = blue / 255.0
+        k = 1.0 - max(r, g, b)
+
+        if k >= 1.0:
+            return 0, 0, 0, 100
+
+        c = (1.0 - r - k) / (1.0 - k)
+        m = (1.0 - g - k) / (1.0 - k)
+        y = (1.0 - b - k) / (1.0 - k)
+
+        return (
+            int(round(c * 100)),
+            int(round(m * 100)),
+            int(round(y * 100)),
+            int(round(k * 100)),
+        )
+
+    def _rgb_from_cmyk(self, c: int, m: int, y: int, k: int) -> tuple[int, int, int]:
+        c = max(0.0, min(1.0, float(c) / 100.0))
+        m = max(0.0, min(1.0, float(m) / 100.0))
+        y = max(0.0, min(1.0, float(y) / 100.0))
+        k = max(0.0, min(1.0, float(k) / 100.0))
+
+        red = int(round(255.0 * (1.0 - c) * (1.0 - k)))
+        green = int(round(255.0 * (1.0 - m) * (1.0 - k)))
+        blue = int(round(255.0 * (1.0 - y) * (1.0 - k)))
+
+        return red, green, blue
+
+    def _sync_color_number_fields(self):
+        if not hasattr(self, "color_r_spin"):
+            return
+
+        red, green, blue = self._selected_removal_color_rgb
+        cyan, magenta, yellow, black = self._cmyk_from_rgb((red, green, blue))
+
+        widgets = [
+            self.color_r_spin,
+            self.color_g_spin,
+            self.color_b_spin,
+            self.color_c_spin,
+            self.color_m_spin,
+            self.color_y_spin,
+            self.color_k_spin,
+        ]
+
+        for widget in widgets:
+            widget.blockSignals(True)
+
+        self.color_r_spin.setValue(red)
+        self.color_g_spin.setValue(green)
+        self.color_b_spin.setValue(blue)
+        self.color_c_spin.setValue(cyan)
+        self.color_m_spin.setValue(magenta)
+        self.color_y_spin.setValue(yellow)
+        self.color_k_spin.setValue(black)
+
+        for widget in widgets:
+            widget.blockSignals(False)
+
+    def _apply_rgb_from_spinboxes(self):
+        if not hasattr(self, "color_r_spin"):
+            return
+
+        self.set_selected_removal_color(
+            self.color_r_spin.value(),
+            self.color_g_spin.value(),
+            self.color_b_spin.value(),
+        )
+
+    def _apply_cmyk_from_spinboxes(self):
+        if not hasattr(self, "color_c_spin"):
+            return
+
+        rgb = self._rgb_from_cmyk(
+            self.color_c_spin.value(),
+            self.color_m_spin.value(),
+            self.color_y_spin.value(),
+            self.color_k_spin.value(),
+        )
+        self.set_selected_removal_color(*rgb)
+
+    def _update_color_swatch(self):
+        if not hasattr(self, "color_swatch_label"):
+            return
+
+        color_hex = self._hex_from_rgb(self._selected_removal_color_rgb)
+        self.color_swatch_label.setStyleSheet(
+            f"background: {color_hex}; border: 1px solid #888888; border-radius: 4px;"
+        )
+        self.color_swatch_label.setToolTip(
+            f"Current Color Removal target color: {color_hex}"
+        )
+        self._sync_color_number_fields()
+
+    def _apply_color_hex_from_edit(self):
+        rgb = self._rgb_from_hex_text(self.color_hex_edit.text())
+
+        if rgb is None:
+            self.color_hex_edit.setText(self._hex_from_rgb(self._selected_removal_color_rgb))
+            self.color_hex_edit.setToolTip(
+                "Invalid hex color. Enter a value like #FFFFFF or FFFFFF."
+            )
+            return
+
+        self._selected_removal_color_rgb = rgb
+        self.color_hex_edit.setText(self._hex_from_rgb(rgb))
+        self.color_hex_edit.setToolTip(
+            "Enter a hex color like #FFFFFF.\n"
+            "You can also type FFFFFF and it will be normalized.\n"
+            "RGB and CMYK fields can be added later."
+        )
+        self._update_color_swatch()
+
+    def choose_removal_color(self):
+        current = QColor(*self._selected_removal_color_rgb)
+        selected = QColorDialog.getColor(
+            current,
+            self,
+            "Pick Color for Color Removal",
+        )
+
+        if not selected.isValid():
+            return
+
+        self.set_selected_removal_color(
+            selected.red(),
+            selected.green(),
+            selected.blue(),
+        )
+
+    def set_selected_removal_color(self, red: int, green: int, blue: int):
+        rgb = (
+            max(0, min(255, int(red))),
+            max(0, min(255, int(green))),
+            max(0, min(255, int(blue))),
+        )
+        self._selected_removal_color_rgb = rgb
+        self.color_hex_edit.setText(self._hex_from_rgb(rgb))
+        self._update_color_swatch()
+
+    def set_selected_removal_hex(self, color_hex: str):
+        rgb = self._rgb_from_hex_text(color_hex)
+        if rgb is None:
+            rgb = (255, 255, 255)
+
+        self._selected_removal_color_rgb = rgb
+        self.color_hex_edit.setText(self._hex_from_rgb(rgb))
+        self._update_color_swatch()
+
+    def get_selected_removal_color(self) -> tuple[int, int, int]:
+        self._apply_color_hex_from_edit()
+        return self._selected_removal_color_rgb
+
+    def get_selected_removal_hex(self) -> str:
+        self._apply_color_hex_from_edit()
+        return self._hex_from_rgb(self._selected_removal_color_rgb)
+
+    def get_color_threshold(self) -> int:
+        return self.threshold_slider.value()
+
+    def get_color_sample_size(self) -> int:
+        if not hasattr(self, "color_sample_size_combo"):
+            return 1
+
+        text = self.color_sample_size_combo.currentText().strip().lower()
+
+        if text.startswith("5"):
+            return 5
+        if text.startswith("3"):
+            return 3
+        return 1
+
+    def get_color_live_preview_enabled(self) -> bool:
+        if hasattr(self, "color_live_preview_check"):
+            return self.color_live_preview_check.isChecked()
+        return False
+
+    def get_color_match_mode(self) -> str:
+        if hasattr(self, "color_match_mode_combo"):
+            return self.color_match_mode_combo.currentText().strip()
+        return "Connected Edges"
+
+    def get_color_feather(self) -> int:
+        if hasattr(self, "color_feather_slider"):
+            return self.color_feather_slider.value()
+        return 0
+
+    def get_color_spill_reduction(self) -> int:
+        if hasattr(self, "color_spill_slider"):
+            return self.color_spill_slider.value()
+        if hasattr(self, "color_spill_cleanup_check"):
+            return 20 if self.color_spill_cleanup_check.isChecked() else 0
+        return 0
+
+    def get_color_spill_cleanup(self) -> bool:
+        # Backward-compatible helper for older code paths.
+        return self.get_color_spill_reduction() > 0
+
+    def get_protect_dark_colors(self) -> bool:
+        if hasattr(self, "protect_dark_colors_check"):
+            return self.protect_dark_colors_check.isChecked()
+        return True
+
+    def _create_slider_row(self, min_value: int, max_value: int):
+        row_widget = QWidget()
+        row_layout = QHBoxLayout(row_widget)
+        row_layout.setContentsMargins(0, 0, 0, 0)
+        row_layout.setSpacing(4)
+
+        slider = QSlider(Qt.Orientation.Horizontal, row_widget)
+        slider.setRange(min_value, max_value)
+
+        value_box = QSpinBox(row_widget)
+        value_box.setRange(min_value, max_value)
+        value_box.setFixedWidth(72)
+        value_box.setKeyboardTracking(False)
+
+        slider.valueChanged.connect(value_box.setValue)
+        value_box.valueChanged.connect(slider.setValue)
+
+        row_layout.addWidget(slider, 1)
+        row_layout.addWidget(value_box)
+
+        return row_widget, slider, value_box
+        
+    def _configure_section_label(self, label: QLabel):
+        label.setObjectName("panelTitle")
+        label.setContentsMargins(0, 8, 0, 2)
+        label.setMinimumHeight(0)
+
+    def _configure_action_button(self, button: QPushButton):
+        button.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        button.setMinimumHeight(28)
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        self._update_responsive_button_texts()
+
+    def _update_responsive_button_texts(self):
+        panel_width = self.width()
+
+        if panel_width >= 360:
+            self.output_dir_btn.setText("Choose Output Folder")
+            self.open_output_btn.setText("Open Output Folder")
+            self.tool_preset_apply_btn.setText("Apply Preset")
+            self.pick_color_btn.setText("Pick Color")
+            self.pick_preview_color_btn.setText("⌕")
+            self.run_action_btn.setText("Run")
+            self.cancel_btn.setText("Cancel")
+            self.backend_reset_btn.setText("Reset Current Backend Settings")
+        elif panel_width >= 320:
+            self.output_dir_btn.setText("Choose Folder")
+            self.open_output_btn.setText("Open Folder")
+            self.tool_preset_apply_btn.setText("Apply")
+            self.pick_color_btn.setText("Pick")
+            self.run_action_btn.setText("Run")
+            self.pick_preview_color_btn.setText("⌕")
+            self.cancel_btn.setText("Stop")
+            self.backend_reset_btn.setText("Reset Backend Settings")
+        else:
+            self.output_dir_btn.setText("Choose")
+            self.open_output_btn.setText("Open")
+            self.tool_preset_apply_btn.setText("Apply")
+            self.pick_color_btn.setText("Pick")
+            self.run_action_btn.setText("Run")
+            self.cancel_btn.setText("Stop")
+            self.pick_preview_color_btn.setText("⌕")
+            self.backend_reset_btn.setText("Reset Backend")
+
+
+        if hasattr(self, "pick_from_preview_btn"):
+            self.pick_from_preview_btn.setText("")
+            self.pick_from_preview_btn.setFixedWidth(42)
+            self.pick_from_preview_btn.setIconSize(QSize(24, 24))
+
+        if hasattr(self, "pick_from_preview_btn"):
+            self._apply_dropper_icon_to_preview_button()
+
+        if hasattr(self, "action_combo"):
+            self._hide_old_process_export_action_row()
+        if hasattr(self, "process_action_btn"):
+            self.process_action_btn.setText("Process")
+        if hasattr(self, "export_action_btn"):
+            self.export_action_btn.setText("Export")
+
+    def _set_slider_and_box_value(self, slider: QSlider, value_box: QSpinBox, value: int):
+        slider.blockSignals(True)
+        value_box.blockSignals(True)
+        slider.setValue(value)
+        value_box.setValue(value)
+        slider.blockSignals(False)
+        value_box.blockSignals(False)
+
+    def _emit_tool_preset_apply_requested(self):
+        entry = self.current_preset_entry()
+        if not entry:
+            return
+
+        preset_name = str(entry.get("name", "")).strip()
+        preset_store = str(entry.get("store", "")).strip()
+
+        if preset_name and preset_store:
+            self.tool_preset_apply_requested.emit(
+                self.tool_combo.currentText(),
+                preset_name,
+                preset_store,
+            )
+
+    def get_flow(self):
+        return self.flow_slider.value()
+
+    def current_preset_entry(self):
+        return self.tool_preset_combo.currentData()
+
+    def get_smart_feather(self):
+        return self.smart_feather_slider.value()
+
+    def get_smart_expand(self):
+        return self.smart_expand_slider.value()
+
+    def get_smart_cleanup_holes(self):
+        return self.smart_cleanup_holes_checkbox.isChecked()
+
+    def get_smart_cleanup_speckles(self):
+        return self.smart_cleanup_speckles_checkbox.isChecked()
+
+    def set_tool_preset_entries(self, preset_entries: list[dict], preferred_name: str = ""):
+        self._preset_entries = list(preset_entries)
+        if preferred_name:
+            self._selected_preset_name = preferred_name
+        self._refresh_preset_combo_for_current_context()
+
+    def set_tool_preset_options(self, preset_names: list[str], preferred_name: str = ""):
+        entries = []
+        for name in preset_names:
+            entries.append({
+                "store": "tool",
+                "scope": "mode_brush",
+                "type_label": "Mode Preset",
+                "tool_name": self.tool_combo.currentText(),
+                "mode_name": self.apply_mode_combo.currentText(),
+                "name": name,
+                "display_name": name,
+                "notes": "",
+            })
+        self.set_tool_preset_entries(entries, preferred_name=preferred_name)
+
+    def _refresh_preset_combo_for_current_context(self):
+        current_tool = self.tool_combo.currentText()
+        current_mode = self.apply_mode_combo.currentText()
+        preferred_name = self._selected_preset_name or self.tool_preset_combo.currentText()
+
+        filtered_entries = []
+        for entry in self._preset_entries:
+            store = str(entry.get("store", "")).strip()
+            scope = str(entry.get("scope", "")).strip()
+            tool_name = str(entry.get("tool_name", "")).strip()
+
+            if store == "full":
+                filtered_entries.append(entry)
+                continue
+
+            if store == "tool":
+                if scope == "mode_brush" and tool_name == current_tool and current_mode == "Brush":
+                    filtered_entries.append(entry)
+                elif scope == "mode_smart_selection" and tool_name == current_tool and current_mode == "Smart Selection":
+                    filtered_entries.append(entry)
+                elif scope == "tool" and tool_name == current_tool:
+                    filtered_entries.append(entry)
+
+        self.tool_preset_combo.blockSignals(True)
+        self.tool_preset_combo.clear()
+        self.tool_preset_combo.addItem("(No preset selected)", None)
+
+        for entry in filtered_entries:
+            display_name = str(entry.get("display_name", entry.get("name", ""))).strip()
+            self.tool_preset_combo.addItem(display_name, entry)
+
+        preferred_index = 0
+        for index in range(1, self.tool_preset_combo.count()):
+            entry = self.tool_preset_combo.itemData(index)
+            if not entry:
+                continue
+            if str(entry.get("name", "")).strip() == preferred_name:
+                preferred_index = index
+                break
+
+        self.tool_preset_combo.setCurrentIndex(preferred_index)
+        self.tool_preset_combo.blockSignals(False)
+
+    def _apply_model_item_tooltips(self):
+        for i in range(self.model_combo.count()):
+            model_name = self.model_combo.itemText(i)
+            description = self.model_descriptions.get(model_name, "")
+            self.model_combo.setItemData(i, description, Qt.ItemDataRole.ToolTipRole)
+
+    def _get_defaults_for_tool_and_mode(self, tool_name: str, apply_mode: str):
+        tool_defaults = self.tool_defaults.get(tool_name, {})
+        mode_defaults = tool_defaults.get(apply_mode)
+        if mode_defaults is not None:
+            return mode_defaults
+
+        if tool_defaults:
+            first_mode = next(iter(tool_defaults))
+            return tool_defaults[first_mode]
+
+        return None
+
+    def _apply_defaults_for_tool_and_mode(self, tool_name: str, apply_mode: str):
+        defaults = self._get_defaults_for_tool_and_mode(tool_name, apply_mode)
+        if defaults is None:
+            return
+
+        widgets = [
+            self.apply_mode_combo,
+            self.magic_mode_combo,
+            self.edge_protect_check,
+            self.brush_size_slider,
+            self.brush_size_value_box,
+            self.softness_slider,
+            self.softness_value_box,
+            self.opacity_slider,
+            self.opacity_value_box,
+            self.flow_slider,
+            self.flow_value_box,
+            self.spacing_slider,
+            self.spacing_value_box,
+            self.tolerance_slider,
+            self.tolerance_value_box,
+            self.smart_feather_slider,
+            self.smart_feather_value_box,
+            self.smart_expand_slider,
+            self.smart_expand_value_box,
+            self.smart_cleanup_holes_checkbox,
+            self.smart_cleanup_speckles_checkbox,
+        ]
+
+        for widget in widgets:
+            widget.blockSignals(True)
+
+        self.apply_mode_combo.setCurrentText(defaults["apply_mode"])
+        self.magic_mode_combo.setCurrentText(defaults.get("magic_mode", "Connected Region"))
+        self.edge_protect_check.setChecked(defaults.get("edge_protect", True))
+
+        self._set_slider_and_box_value(
+            self.brush_size_slider,
+            self.brush_size_value_box,
+            defaults.get("brush_size", 42),
+        )
+        self._set_slider_and_box_value(
+            self.softness_slider,
+            self.softness_value_box,
+            defaults.get("softness", 35),
+        )
+        self._set_slider_and_box_value(
+            self.opacity_slider,
+            self.opacity_value_box,
+            defaults.get("opacity", 100),
+        )
+        self._set_slider_and_box_value(
+            self.flow_slider,
+            self.flow_value_box,
+            defaults.get("flow", 100),
+        )
+        self._set_slider_and_box_value(
+            self.spacing_slider,
+            self.spacing_value_box,
+            defaults.get("spacing", 1),
+        )
+        self._set_slider_and_box_value(
+            self.tolerance_slider,
+            self.tolerance_value_box,
+            defaults.get("tolerance", 35),
+        )
+        self._set_slider_and_box_value(
+            self.smart_feather_slider,
+            self.smart_feather_value_box,
+            defaults.get("smart_feather", 0),
+        )
+        self._set_slider_and_box_value(
+            self.smart_expand_slider,
+            self.smart_expand_value_box,
+            defaults.get("smart_expand", 1),
+        )
+
+        self.smart_cleanup_holes_checkbox.setChecked(defaults.get("smart_cleanup_holes", True))
+        self.smart_cleanup_speckles_checkbox.setChecked(defaults.get("smart_cleanup_speckles", True))
+
+        for widget in widgets:
+            widget.blockSignals(False)
+
+        self._last_tool_name = self.tool_combo.currentText()
+        self._last_apply_mode = self.apply_mode_combo.currentText()
+
+    def refresh_current_tool_display(self):
+        self._apply_defaults_for_tool_and_mode(
+            self.tool_combo.currentText(),
+            self.apply_mode_combo.currentText(),
+        )
+        self.update_tool_visibility()
+
+    def _on_tool_changed(self, tool_name: str):
+        previous_tool = self._last_tool_name
+        previous_mode = self._last_apply_mode
+        self.tool_mode_about_to_change.emit(previous_tool, previous_mode)
+
+        self._apply_defaults_for_tool_and_mode(tool_name, self.apply_mode_combo.currentText())
+        self.update_tool_visibility()
+        self._refresh_preset_combo_for_current_context()
+
+        self._last_tool_name = self.tool_combo.currentText()
+        self._last_apply_mode = self.apply_mode_combo.currentText()
+
+    def _on_apply_mode_changed(self, apply_mode: str):
+        previous_tool = self.tool_combo.currentText()
+        previous_mode = self._last_apply_mode
+        self.tool_mode_about_to_change.emit(previous_tool, previous_mode)
+
+        self._apply_defaults_for_tool_and_mode(self.tool_combo.currentText(), apply_mode)
+        self.update_tool_visibility()
+        self._refresh_preset_combo_for_current_context()
+
+        self._last_tool_name = self.tool_combo.currentText()
+        self._last_apply_mode = self.apply_mode_combo.currentText()
+
+    def _color_swatch_mouse_press(self, event):
+        if event.button() == Qt.MouseButton.LeftButton:
+            self.choose_removal_color()
+
+
+    def open_output_folder(self):
+        output_text = self.output_dir_edit.text().strip()
+
+        if not output_text:
+            QMessageBox.warning(
+                self,
+                "No output folder",
+                "Choose an output folder first.",
+            )
+            return
+
+        output_path = Path(output_text).expanduser()
+
+        if not output_path.exists():
+            QMessageBox.warning(
+                self,
+                "Output folder not found",
+                f"The output folder does not exist:\n{output_path}",
+            )
+            return
+
+        if not output_path.is_dir():
+            QMessageBox.warning(
+                self,
+                "Output path is not a folder",
+                f"This path is not a folder:\n{output_path}",
+            )
+            return
+
+        QDesktopServices.openUrl(QUrl.fromLocalFile(str(output_path)))
+
+
+    def open_output_folder(self):
+        output_text = self.output_dir_edit.text().strip()
+
+        if not output_text:
+            QMessageBox.warning(
+                self,
+                "No output folder",
+                "Choose an output folder first.",
+            )
+            return
+
+        output_path = Path(output_text).expanduser()
+
+        if not output_path.exists():
+            QMessageBox.warning(
+                self,
+                "Output folder not found",
+                f"The output folder does not exist:\n{output_path}",
+            )
+            return
+
+        if not output_path.is_dir():
+            QMessageBox.warning(
+                self,
+                "Output path is not a folder",
+                f"This path is not a folder:\n{output_path}",
+            )
+            return
+
+        opened = QDesktopServices.openUrl(QUrl.fromLocalFile(str(output_path)))
+
+        if not opened:
+            try:
+                subprocess.Popen(["xdg-open", str(output_path)])
+            except Exception as exc:
+                QMessageBox.warning(
+                    self,
+                    "Could not open folder",
+                    f"Could not open this folder:\n{output_path}\n\n{exc}",
+                )
+
+    def choose_output_dir(self):
+        folder = QFileDialog.getExistingDirectory(self, "Choose Output Folder")
+        if folder:
+            self.output_dir_edit.setText(folder)
+
+    def set_backend_recommendation_text(self, text: str):
+        self.backend_recommendation_label.setText(text)
+        self.backend_recommendation_label.setToolTip(text)
+        self.backend_label.setToolTip(text)
+        self.backend_combo.setToolTip(text)
+
+    def reset_current_backend_settings(self):
+        backend_name = self.backend_combo.currentText()
+
+        if backend_name == "rembg":
+            self.rembg_alpha_matting_check.setChecked(False)
+            self.rembg_fg_slider.setValue(240)
+            self.rembg_bg_slider.setValue(10)
+            self.rembg_erode_slider.setValue(10)
+            self.rembg_post_process_check.setChecked(False)
+            return
+
+        if backend_name == "InSPyReNet":
+            self.inspyrenet_mode_combo.setCurrentText("fast")
+            self.inspyrenet_resize_combo.setCurrentText("static")
+            self.inspyrenet_threshold_slider.setValue(50)
+            return
+
+        if backend_name == "MODNet":
+            self.modnet_threshold_slider.setValue(10)
+            self.modnet_feather_slider.setValue(0)
+
+    def update_backend_hint(self):
+        backend_name = self.backend_combo.currentText()
+        description = self.backend_descriptions.get(backend_name, "")
+        self.backend_hint_label.setText(description)
+        self.backend_hint_label.setToolTip(description)
+        self.backend_label.setToolTip(description)
+        self.backend_combo.setToolTip(description)
+
+    def update_backend_visibility(self):
+        backend_name = self.backend_combo.currentText()
+        is_rembg_backend = backend_name == "rembg"
+        is_inspyrenet_backend = backend_name == "InSPyReNet"
+        is_modnet_backend = backend_name == "MODNet"
+
+        self.model_label.setVisible(is_rembg_backend)
+        self.model_combo.setVisible(is_rembg_backend)
+        self.model_hint_label.setVisible(False)
+
+        self.model_label.setEnabled(is_rembg_backend)
+        self.model_combo.setEnabled(is_rembg_backend)
+        self.model_hint_label.setEnabled(False)
+
+        self.include_model_suffix_check.setVisible(True)
+        self.include_model_suffix_check.setEnabled(True)
+
+        self.rembg_section_label.setVisible(is_rembg_backend)
+        self.rembg_alpha_matting_check.setVisible(is_rembg_backend)
+        self.rembg_fg_label.setVisible(is_rembg_backend)
+        self.rembg_fg_row.setVisible(is_rembg_backend)
+        self.rembg_bg_label.setVisible(is_rembg_backend)
+        self.rembg_bg_row.setVisible(is_rembg_backend)
+        self.rembg_erode_label.setVisible(is_rembg_backend)
+        self.rembg_erode_row.setVisible(is_rembg_backend)
+        self.rembg_post_process_check.setVisible(is_rembg_backend)
+        self.rembg_hint_label.setVisible(False)
+
+        self.rembg_section_label.setEnabled(is_rembg_backend)
+        self.rembg_alpha_matting_check.setEnabled(is_rembg_backend)
+        self.rembg_fg_label.setEnabled(is_rembg_backend)
+        self.rembg_fg_slider.setEnabled(is_rembg_backend)
+        self.rembg_fg_value_box.setEnabled(is_rembg_backend)
+        self.rembg_bg_label.setEnabled(is_rembg_backend)
+        self.rembg_bg_slider.setEnabled(is_rembg_backend)
+        self.rembg_bg_value_box.setEnabled(is_rembg_backend)
+        self.rembg_erode_label.setEnabled(is_rembg_backend)
+        self.rembg_erode_slider.setEnabled(is_rembg_backend)
+        self.rembg_erode_value_box.setEnabled(is_rembg_backend)
+        self.rembg_post_process_check.setEnabled(is_rembg_backend)
+        self.rembg_hint_label.setEnabled(False)
+
+        self.inspyrenet_section_label.setVisible(is_inspyrenet_backend)
+        self.inspyrenet_mode_label.setVisible(is_inspyrenet_backend)
+        self.inspyrenet_mode_combo.setVisible(is_inspyrenet_backend)
+        self.inspyrenet_resize_label.setVisible(is_inspyrenet_backend)
+        self.inspyrenet_resize_combo.setVisible(is_inspyrenet_backend)
+        self.inspyrenet_threshold_label.setVisible(is_inspyrenet_backend)
+        self.inspyrenet_threshold_row.setVisible(is_inspyrenet_backend)
+        self.inspyrenet_hint_label.setVisible(False)
+
+        self.inspyrenet_section_label.setEnabled(is_inspyrenet_backend)
+        self.inspyrenet_mode_label.setEnabled(is_inspyrenet_backend)
+        self.inspyrenet_mode_combo.setEnabled(is_inspyrenet_backend)
+        self.inspyrenet_resize_label.setEnabled(is_inspyrenet_backend)
+        self.inspyrenet_resize_combo.setEnabled(is_inspyrenet_backend)
+        self.inspyrenet_threshold_label.setEnabled(is_inspyrenet_backend)
+        self.inspyrenet_threshold_slider.setEnabled(is_inspyrenet_backend)
+        self.inspyrenet_threshold_value_box.setEnabled(is_inspyrenet_backend)
+        self.inspyrenet_hint_label.setEnabled(False)
+
+        self.modnet_section_label.setVisible(is_modnet_backend)
+        self.modnet_threshold_label.setVisible(is_modnet_backend)
+        self.modnet_threshold_row.setVisible(is_modnet_backend)
+        self.modnet_feather_label.setVisible(is_modnet_backend)
+        self.modnet_feather_row.setVisible(is_modnet_backend)
+        self.modnet_hint_label.setVisible(False)
+
+        self.modnet_section_label.setEnabled(is_modnet_backend)
+        self.modnet_threshold_label.setEnabled(is_modnet_backend)
+        self.modnet_threshold_slider.setEnabled(is_modnet_backend)
+        self.modnet_threshold_value_box.setEnabled(is_modnet_backend)
+        self.modnet_feather_label.setEnabled(is_modnet_backend)
+        self.modnet_feather_slider.setEnabled(is_modnet_backend)
+        self.modnet_feather_value_box.setEnabled(is_modnet_backend)
+        self.modnet_hint_label.setEnabled(False)
+
+        if is_rembg_backend:
+            self.update_model_hint()
+        else:
+            note = (
+                "Model selection is only used for the rembg backend.\n"
+                "For InSPyReNet and MODNet, choose the backend and use its specific controls."
+            )
+            self.model_hint_label.setText(note)
+            self.model_label.setToolTip(note)
+            self.model_combo.setToolTip(note)
+
+        self.update_suffix_preview()
+
+    def update_model_hint(self):
+        model_name = self.model_combo.currentText()
+        description = self.model_descriptions.get(model_name, "")
+        self.model_hint_label.setText(description)
+        self.model_hint_label.setToolTip(description)
+        self.model_label.setToolTip(description)
+        self.model_combo.setToolTip(description)
+
+    def _normalized_manual_suffix(self) -> str:
+        user_suffix = self.naming_edit.text().strip()
+
+        if not user_suffix:
+            user_suffix = "nobg"
+
+        user_suffix = user_suffix.replace(" ", "_")
+
+        while "__" in user_suffix:
+            user_suffix = user_suffix.replace("__", "_")
+
+        user_suffix = user_suffix.strip("_")
+
+        if not user_suffix:
+            user_suffix = "nobg"
+
+        return f"_{user_suffix}"
+
+    def update_suffix_preview(self):
+        manual_suffix = self._normalized_manual_suffix()
+        model_name = self.model_combo.currentText().strip()
+        include_model_name = self.include_model_suffix_check.isChecked()
+        backend_name = self.backend_combo.currentText().strip()
+        removal_mode = self.removal_mode_combo.currentText().strip()
+
+        parts = []
+
+        if include_model_name:
+            if removal_mode == "Color Removal":
+                parts.append("color_removal")
+            elif backend_name == "rembg":
+                if model_name:
+                    parts.append(model_name)
+            elif backend_name:
+                parts.append(backend_name.lower().replace(" ", "_"))
+
+        parts.append(manual_suffix.strip("_"))
+
+        final_suffix = "_" + "_".join(part for part in parts if part)
+
+        while "__" in final_suffix:
+            final_suffix = final_suffix.replace("__", "_")
+
+        self.suffix_preview_label.setText(f"Final suffix preview: {final_suffix}")
+
+    def update_mode_visibility(self):
+        is_color_mode = self.removal_mode_combo.currentText() == "Color Removal"
+        show_ai_controls = not is_color_mode
+
+        self.color_removal_section_label.setVisible(is_color_mode)
+        self.color_hex_label.setVisible(is_color_mode)
+        self.color_hex_row.setVisible(is_color_mode)
+        self.pick_preview_color_btn.setVisible(is_color_mode)
+        self.color_sample_size_label.setVisible(is_color_mode)
+        self.color_sample_size_combo.setVisible(is_color_mode)
+        self.color_live_preview_check.setVisible(is_color_mode)
+        self.color_rgb_label.setVisible(is_color_mode)
+        self.color_rgb_row.setVisible(is_color_mode)
+        self.color_cmyk_label.setVisible(is_color_mode)
+        self.color_cmyk_row.setVisible(is_color_mode)
+        self.color_match_mode_label.setVisible(is_color_mode)
+        self.color_match_mode_combo.setVisible(is_color_mode)
+        self.threshold_label.setVisible(is_color_mode)
+        self.threshold_row.setVisible(is_color_mode)
+        self.color_feather_label.setVisible(is_color_mode)
+        self.color_feather_row.setVisible(is_color_mode)
+        self.color_spill_label.setVisible(is_color_mode)
+        self.color_spill_row.setVisible(is_color_mode)
+        self.protect_dark_colors_check.setVisible(is_color_mode)
+
+        self.backend_label.setVisible(show_ai_controls)
+        self.backend_combo.setVisible(show_ai_controls)
+        self.backend_reset_btn.setVisible(show_ai_controls)
+        self.backend_hint_label.setVisible(False)
+
+        self.backend_label.setEnabled(show_ai_controls)
+        self.backend_combo.setEnabled(show_ai_controls)
+        self.backend_reset_btn.setEnabled(show_ai_controls)
+        self.backend_hint_label.setEnabled(False)
+
+        self.include_model_suffix_check.setEnabled(True)
+
+        if is_color_mode:
+            self.model_label.setVisible(False)
+            self.model_combo.setVisible(False)
+            self.model_hint_label.setVisible(False)
+
+            self.rembg_section_label.setVisible(False)
+            self.rembg_alpha_matting_check.setVisible(False)
+            self.rembg_fg_label.setVisible(False)
+            self.rembg_fg_row.setVisible(False)
+            self.rembg_bg_label.setVisible(False)
+            self.rembg_bg_row.setVisible(False)
+            self.rembg_erode_label.setVisible(False)
+            self.rembg_erode_row.setVisible(False)
+            self.rembg_post_process_check.setVisible(False)
+            self.rembg_hint_label.setVisible(False)
+
+            self.inspyrenet_section_label.setVisible(False)
+            self.inspyrenet_mode_label.setVisible(False)
+            self.inspyrenet_mode_combo.setVisible(False)
+            self.inspyrenet_resize_label.setVisible(False)
+            self.inspyrenet_resize_combo.setVisible(False)
+            self.inspyrenet_threshold_label.setVisible(False)
+            self.inspyrenet_threshold_row.setVisible(False)
+            self.inspyrenet_hint_label.setVisible(False)
+
+            self.modnet_section_label.setVisible(False)
+            self.modnet_threshold_label.setVisible(False)
+            self.modnet_threshold_row.setVisible(False)
+            self.modnet_feather_label.setVisible(False)
+            self.modnet_feather_row.setVisible(False)
+            self.modnet_hint_label.setVisible(False)
+
+            self.model_label.setEnabled(False)
+            self.model_combo.setEnabled(False)
+            self.model_hint_label.setEnabled(False)
+        else:
+            self.backend_label.setEnabled(True)
+            self.backend_combo.setEnabled(True)
+            self.backend_hint_label.setEnabled(False)
+            self.update_backend_visibility()
+
+        self.update_suffix_preview()
+
+    def update_background_visibility(self):
+        is_solid = self.background_mode_combo.currentText() == "Solid Color"
+        self.background_color_label.setVisible(is_solid)
+        self.background_color_combo.setVisible(is_solid)
+
+    def update_tool_visibility(self):
+        tool_name = self.tool_combo.currentText()
+        apply_mode = self.apply_mode_combo.currentText()
+
+        is_brush = apply_mode == "Brush"
+        is_smart = apply_mode == "Smart Selection"
+        is_erase_restore = tool_name in ("Erase", "Restore")
+        is_magic = tool_name == "Magic Erase"
+        is_background = tool_name == "Background Erase"
+
+        show_brush_size = (
+            (is_erase_restore and is_brush)
+            or (is_erase_restore and is_smart)
+            or (is_magic and is_brush)
+            or (is_background and is_brush)
+        )
+
+        show_softness = show_brush_size
+
+        show_opacity = (
+            (is_erase_restore and is_brush)
+            or (is_erase_restore and is_smart)
+            or is_magic
+            or is_background
+        )
+
+        show_flow = is_brush and is_erase_restore
+
+        show_spacing = (
+            (is_erase_restore and is_brush)
+            or (is_magic and is_brush)
+            or (is_background and is_brush)
+        )
+
+        show_tolerance = is_magic or is_background
+        show_magic_mode = is_magic
+        show_edge_protect = is_magic or is_background
+        show_smart_controls = is_smart
+
+        self.brush_size_label.setVisible(show_brush_size)
+        self.brush_size_row.setVisible(show_brush_size)
+        self.brush_size_slider.setEnabled(show_brush_size)
+        self.brush_size_value_box.setEnabled(show_brush_size)
+
+        self.softness_label.setVisible(show_softness)
+        self.softness_row.setVisible(show_softness)
+        self.softness_slider.setEnabled(show_softness)
+        self.softness_value_box.setEnabled(show_softness)
+
+        self.opacity_label.setVisible(show_opacity)
+        self.opacity_row.setVisible(show_opacity)
+        self.opacity_slider.setEnabled(show_opacity)
+        self.opacity_value_box.setEnabled(show_opacity)
+
+        self.flow_label.setVisible(show_flow)
+        self.flow_row.setVisible(show_flow)
+        self.flow_slider.setEnabled(show_flow)
+        self.flow_value_box.setEnabled(show_flow)
+
+        self.spacing_label.setVisible(show_spacing)
+        self.spacing_row.setVisible(show_spacing)
+        self.spacing_slider.setEnabled(show_spacing)
+        self.spacing_value_box.setEnabled(show_spacing)
+
+        self.tolerance_label.setVisible(show_tolerance)
+        self.tolerance_row.setVisible(show_tolerance)
+        self.tolerance_slider.setEnabled(show_tolerance)
+        self.tolerance_value_box.setEnabled(show_tolerance)
+
+        self.magic_mode_label.setVisible(show_magic_mode)
+        self.magic_mode_combo.setVisible(show_magic_mode)
+        self.magic_mode_combo.setEnabled(show_magic_mode)
+
+        self.smart_feather_label.setVisible(show_smart_controls)
+        self.smart_feather_row.setVisible(show_smart_controls)
+        self.smart_feather_slider.setEnabled(show_smart_controls)
+        self.smart_feather_value_box.setEnabled(show_smart_controls)
+
+        self.smart_expand_label.setVisible(show_smart_controls)
+        self.smart_expand_row.setVisible(show_smart_controls)
+        self.smart_expand_slider.setEnabled(show_smart_controls)
+        self.smart_expand_value_box.setEnabled(show_smart_controls)
+
+        self.smart_cleanup_holes_checkbox.setVisible(show_smart_controls)
+        self.smart_cleanup_holes_checkbox.setEnabled(show_smart_controls)
+
+        self.smart_cleanup_speckles_checkbox.setVisible(show_smart_controls)
+        self.smart_cleanup_speckles_checkbox.setEnabled(show_smart_controls)
+
+        self.edge_protect_check.setVisible(show_edge_protect)
+        self.edge_protect_check.setEnabled(show_edge_protect)
+
+        self.apply_mode_label.setVisible(True)
+        self.apply_mode_combo.setVisible(True)
+        self.apply_mode_combo.setEnabled(True)

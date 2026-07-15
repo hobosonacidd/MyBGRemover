@@ -100,6 +100,8 @@ class FullExportWorker(QObject):
                     match_mode=self.backend_options.get("match_mode", "Connected Edges"),
                     feather=self.backend_options.get("feather", 0),
                     reduce_spill=self.backend_options.get("reduce_spill", False),
+                    spill_reduction=self.backend_options.get("spill_reduction", 20 if self.backend_options.get("reduce_spill", False) else 0),
+                    protect_dark_colors=self.backend_options.get("protect_dark_colors", True),
                 )
 
                 if not ok:

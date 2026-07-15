@@ -7,7 +7,7 @@ import numpy as np
 from PIL import Image
 
 from PySide6.QtCore import Qt, Signal, QPoint, QSize
-from PySide6.QtGui import QPixmap, QPainter, QPen, QColor, QImage
+from PySide6.QtGui import QPixmap, QPainter, QPen, QColor, QImage, QIcon
 from PySide6.QtWidgets import (
     QFrame,
     QVBoxLayout,
@@ -69,6 +69,9 @@ class PreviewCanvas(QFrame):
         self._interaction_mode = "preview"
         self._current_mode = "after"
         self._color_pick_mode_active = False
+        self._color_pick_sample_size = 3
+        self._color_removal_preview_enabled = False
+        self._color_removal_preview_options = {}
 
         self._tool_name = "Erase"
         self._apply_mode = "Brush"
@@ -147,6 +150,14 @@ class PreviewCanvas(QFrame):
         self._configure_toolbar_button(self.reset_edits_btn)
         self._configure_toolbar_button(self.zoom_in_btn)
         self._configure_toolbar_button(self.zoom_out_btn)
+
+        for button in (
+            self.preview_mode_btn,
+            self.edit_mode_btn,
+            self.before_btn,
+            self.after_btn,
+        ):
+            button.setCheckable(True)
 
         toolbar.addWidget(self.preview_mode_btn)
         toolbar.addWidget(self.edit_mode_btn)
@@ -249,6 +260,217 @@ class PreviewCanvas(QFrame):
             self.zoom_in_btn.setText("+")
             self.zoom_out_btn.setText("-")
 
+
+    def _update_responsive_toolbar_texts(self):
+        panel_width = self.width()
+
+        for button in (
+            self.preview_mode_btn,
+            self.edit_mode_btn,
+            self.before_btn,
+            self.after_btn,
+            self.undo_btn,
+            self.redo_btn,
+            self.reset_edits_btn,
+            self.zoom_in_btn,
+            self.zoom_out_btn,
+        ):
+            button.setIcon(QIcon())
+
+        if panel_width >= 700:
+            self.preview_mode_btn.setText("Preview Mode ✓" if self._interaction_mode == "preview" else "Preview Mode")
+            self.edit_mode_btn.setText("Edit Mode ✓" if self._interaction_mode == "edit" else "Edit Mode")
+            self.before_btn.setText("Before ✓" if self._current_mode == "before" else "Before")
+            self.after_btn.setText("After ✓" if self._current_mode == "after" else "After")
+            self.undo_btn.setText("Undo")
+            self.redo_btn.setText("Redo")
+            self.reset_edits_btn.setText("Reset Edits")
+            self.zoom_in_btn.setText("Zoom +")
+            self.zoom_out_btn.setText("Zoom -")
+            return
+
+        if panel_width >= 560:
+            self.preview_mode_btn.setText("Preview ✓" if self._interaction_mode == "preview" else "Preview")
+            self.edit_mode_btn.setText("Edit ✓" if self._interaction_mode == "edit" else "Edit")
+            self.before_btn.setText("Before ✓" if self._current_mode == "before" else "Before")
+            self.after_btn.setText("After ✓" if self._current_mode == "after" else "After")
+            self.undo_btn.setText("Undo")
+            self.redo_btn.setText("Redo")
+            self.reset_edits_btn.setText("Reset")
+            self.zoom_in_btn.setText("+")
+            self.zoom_out_btn.setText("-")
+            return
+
+        self.preview_mode_btn.setText("👁 ✓" if self._interaction_mode == "preview" else "👁")
+        self.edit_mode_btn.setText("✎ ✓" if self._interaction_mode == "edit" else "✎")
+        self.after_btn.setText("After ✓" if self._current_mode == "after" else "After")
+        self.undo_btn.setText("↶")
+        self.redo_btn.setText("↷")
+        self.reset_edits_btn.setText("⟲")
+        self.zoom_in_btn.setText("+")
+        self.zoom_out_btn.setText("-")
+
+        before_icon_path = Path("")
+        if before_icon_path.exists():
+            self.before_btn.setIcon(QIcon(str(before_icon_path)))
+            self.before_btn.setIconSize(QSize(24, 24))
+            self.before_btn.setText("✓" if self._current_mode == "before" else "")
+            self.before_btn.setToolTip("Before")
+        else:
+            self.before_btn.setText("Before ✓" if self._current_mode == "before" else "Before")
+
+
+    def _update_responsive_toolbar_texts(self):
+        panel_width = self.width()
+
+        for button in (
+            self.preview_mode_btn,
+            self.edit_mode_btn,
+            self.before_btn,
+            self.after_btn,
+            self.undo_btn,
+            self.redo_btn,
+            self.reset_edits_btn,
+            self.zoom_in_btn,
+            self.zoom_out_btn,
+        ):
+            button.setIcon(QIcon())
+            button.setStyleSheet("")
+
+        if panel_width >= 700:
+            self.preview_mode_btn.setText("Preview Mode ✓" if self._interaction_mode == "preview" else "Preview Mode")
+            self.edit_mode_btn.setText("Edit Mode ✓" if self._interaction_mode == "edit" else "Edit Mode")
+            self.before_btn.setText("Before ✓" if self._current_mode == "before" else "Before")
+            self.after_btn.setText("After ✓" if self._current_mode == "after" else "After")
+            self.undo_btn.setText("Undo")
+            self.redo_btn.setText("Redo")
+            self.reset_edits_btn.setText("Reset Edits")
+            self.zoom_in_btn.setText("Zoom +")
+            self.zoom_out_btn.setText("Zoom -")
+            return
+
+        if panel_width >= 560:
+            self.preview_mode_btn.setText("Preview ✓" if self._interaction_mode == "preview" else "Preview")
+            self.edit_mode_btn.setText("Edit ✓" if self._interaction_mode == "edit" else "Edit")
+            self.before_btn.setText("Before ✓" if self._current_mode == "before" else "Before")
+            self.after_btn.setText("After ✓" if self._current_mode == "after" else "After")
+            self.undo_btn.setText("Undo")
+            self.redo_btn.setText("Redo")
+            self.reset_edits_btn.setText("Reset")
+            self.zoom_in_btn.setText("+")
+            self.zoom_out_btn.setText("-")
+            return
+
+        icon_style = "font-size: 22px; font-weight: bold; padding: 0px;"
+        for button in (
+            self.preview_mode_btn,
+            self.edit_mode_btn,
+            self.before_btn,
+            self.after_btn,
+            self.undo_btn,
+            self.redo_btn,
+            self.reset_edits_btn,
+            self.zoom_in_btn,
+            self.zoom_out_btn,
+        ):
+            button.setStyleSheet(icon_style)
+
+        self.preview_mode_btn.setText("👁✓" if self._interaction_mode == "preview" else "👁")
+        self.edit_mode_btn.setText("✎✓" if self._interaction_mode == "edit" else "✎")
+        self.before_btn.setText("◀✓" if self._current_mode == "before" else "◀")
+        self.after_btn.setText("▶✓" if self._current_mode == "after" else "▶")
+        self.undo_btn.setText("↶")
+        self.redo_btn.setText("↷")
+        self.reset_edits_btn.setText("⟲")
+        self.zoom_in_btn.setText("+")
+        self.zoom_out_btn.setText("-")
+
+        self.preview_mode_btn.setToolTip("Preview Mode")
+        self.edit_mode_btn.setToolTip("Edit Mode")
+        self.before_btn.setToolTip("Before")
+        self.after_btn.setToolTip("After")
+        self.undo_btn.setToolTip("Undo")
+        self.redo_btn.setToolTip("Redo")
+        self.reset_edits_btn.setToolTip("Reset Edits")
+        self.zoom_in_btn.setToolTip("Zoom In")
+        self.zoom_out_btn.setToolTip("Zoom Out")
+
+
+    def _update_responsive_toolbar_texts(self):
+        panel_width = self.width()
+
+        for button in (
+            self.preview_mode_btn,
+            self.edit_mode_btn,
+            self.before_btn,
+            self.after_btn,
+            self.undo_btn,
+            self.redo_btn,
+            self.reset_edits_btn,
+            self.zoom_in_btn,
+            self.zoom_out_btn,
+        ):
+            button.setIcon(QIcon())
+            button.setStyleSheet("")
+
+        if panel_width >= 700:
+            self.preview_mode_btn.setText("Preview Mode")
+            self.edit_mode_btn.setText("Edit Mode")
+            self.before_btn.setText("Before")
+            self.after_btn.setText("After")
+            self.undo_btn.setText("Undo")
+            self.redo_btn.setText("Redo")
+            self.reset_edits_btn.setText("Reset Edits")
+            self.zoom_in_btn.setText("Zoom +")
+            self.zoom_out_btn.setText("Zoom -")
+            return
+
+        if panel_width >= 560:
+            self.preview_mode_btn.setText("Preview")
+            self.edit_mode_btn.setText("Edit")
+            self.before_btn.setText("Before")
+            self.after_btn.setText("After")
+            self.undo_btn.setText("Undo")
+            self.redo_btn.setText("Redo")
+            self.reset_edits_btn.setText("Reset")
+            self.zoom_in_btn.setText("+")
+            self.zoom_out_btn.setText("-")
+            return
+
+        icon_style = "font-size: 22px; font-weight: bold; padding: 0px;"
+        for button in (
+            self.preview_mode_btn,
+            self.edit_mode_btn,
+            self.before_btn,
+            self.after_btn,
+            self.undo_btn,
+            self.redo_btn,
+            self.reset_edits_btn,
+            self.zoom_in_btn,
+            self.zoom_out_btn,
+        ):
+            button.setStyleSheet(icon_style)
+
+        self.preview_mode_btn.setText("👁")
+        self.edit_mode_btn.setText("✎")
+        self.before_btn.setText("◀")
+        self.after_btn.setText("▶")
+        self.undo_btn.setText("↶")
+        self.redo_btn.setText("↷")
+        self.reset_edits_btn.setText("⟲")
+        self.zoom_in_btn.setText("+")
+        self.zoom_out_btn.setText("-")
+
+        self.preview_mode_btn.setToolTip("Preview Mode")
+        self.edit_mode_btn.setToolTip("Edit Mode")
+        self.before_btn.setToolTip("Before")
+        self.after_btn.setToolTip("After")
+        self.undo_btn.setToolTip("Undo")
+        self.redo_btn.setToolTip("Redo")
+        self.reset_edits_btn.setToolTip("Reset Edits")
+        self.zoom_in_btn.setToolTip("Zoom In")
+        self.zoom_out_btn.setToolTip("Zoom Out")
+
     def resizeEvent(self, event):
         super().resizeEvent(event)
         self._update_responsive_toolbar_texts()
@@ -339,6 +561,181 @@ class PreviewCanvas(QFrame):
         self.image_label.resize(0, 0)
         self.image_label.hide()
         self._update_mode_buttons()
+
+    def set_color_pick_sample_size(self, sample_size: int):
+        try:
+            sample_size = int(sample_size)
+        except Exception:
+            sample_size = 3
+
+        if sample_size not in (1, 3, 5):
+            sample_size = 3
+
+        self._color_pick_sample_size = sample_size
+
+    def set_color_removal_preview_options(self, enabled: bool, options: dict | None = None):
+        self._color_removal_preview_enabled = bool(enabled)
+        self._color_removal_preview_options = dict(options or {})
+
+        if self._color_removal_preview_enabled:
+            self._interaction_mode = "preview"
+            if self._editable_after_image_pil is not None:
+                self._current_mode = "after"
+
+        self._load_current_mode_pixmap()
+
+    def _normalize_preview_target_color(self):
+        target = self._color_removal_preview_options.get("target_color", (255, 255, 255))
+
+        if isinstance(target, str):
+            value = target.strip()
+            if value.startswith("#"):
+                value = value[1:]
+            if len(value) == 6:
+                try:
+                    return (
+                        int(value[0:2], 16),
+                        int(value[2:4], 16),
+                        int(value[4:6], 16),
+                    )
+                except ValueError:
+                    return (255, 255, 255)
+
+        if isinstance(target, (tuple, list)) and len(target) >= 3:
+            return (
+                max(0, min(255, int(target[0]))),
+                max(0, min(255, int(target[1]))),
+                max(0, min(255, int(target[2]))),
+            )
+
+        return (255, 255, 255)
+
+    def _preview_luminance(self, rgb):
+        return (
+            rgb[:, :, 0] * 0.2126
+            + rgb[:, :, 1] * 0.7152
+            + rgb[:, :, 2] * 0.0722
+        )
+
+    def _target_luminance(self, target):
+        r, g, b = target
+        return (r * 0.2126) + (g * 0.7152) + (b * 0.0722)
+
+    def _connected_edges_preview_mask(self, mask):
+        mask = mask.astype(bool)
+        height, width = mask.shape
+        connected = np.zeros_like(mask, dtype=bool)
+        visited = np.zeros_like(mask, dtype=bool)
+        q = deque()
+
+        if height <= 0 or width <= 0:
+            return connected
+
+        for x in range(width):
+            if mask[0, x]:
+                q.append((x, 0))
+                visited[0, x] = True
+            if mask[height - 1, x] and not visited[height - 1, x]:
+                q.append((x, height - 1))
+                visited[height - 1, x] = True
+
+        for y in range(height):
+            if mask[y, 0] and not visited[y, 0]:
+                q.append((0, y))
+                visited[y, 0] = True
+            if mask[y, width - 1] and not visited[y, width - 1]:
+                q.append((width - 1, y))
+                visited[y, width - 1] = True
+
+        while q:
+            x, y = q.popleft()
+            connected[y, x] = True
+
+            for nx, ny in ((x - 1, y), (x + 1, y), (x, y - 1), (x, y + 1)):
+                if nx < 0 or ny < 0 or nx >= width or ny >= height:
+                    continue
+                if visited[ny, nx]:
+                    continue
+                visited[ny, nx] = True
+                if mask[ny, nx]:
+                    q.append((nx, ny))
+
+        return connected
+
+    def _build_color_removal_preview_mask(self):
+        source_image = self._get_current_image()
+
+        if source_image is None:
+            return None
+
+        rgba = np.array(source_image.convert("RGBA"), dtype=np.uint8)
+        rgb = rgba[:, :, :3].astype(np.float32)
+        alpha = rgba[:, :, 3].astype(np.float32)
+
+        target_tuple = self._normalize_preview_target_color()
+        target = np.array(target_tuple, dtype=np.float32)
+        threshold = int(self._color_removal_preview_options.get("threshold", 30))
+        match_mode = str(
+            self._color_removal_preview_options.get("match_mode", "Connected Edges")
+        ).strip()
+        protect_dark = bool(
+            self._color_removal_preview_options.get("protect_dark_colors", True)
+        )
+
+        diff = rgb - target
+        distance = np.sqrt(np.sum(diff * diff, axis=2))
+
+        mask = (distance <= float(threshold)) & (alpha > 0.0)
+
+        if protect_dark and self._target_luminance(target_tuple) > 45.0:
+            mask &= ~(self._preview_luminance(rgb) < 30.0)
+
+        if match_mode.lower() != "global match":
+            mask = self._connected_edges_preview_mask(mask)
+
+        try:
+            feather = int(self._color_removal_preview_options.get("feather", 0))
+        except Exception:
+            feather = 0
+
+        if feather > 0:
+            preview_expand = max(1, min(12, feather * 2))
+            if hasattr(self, "_dilate_binary_mask"):
+                mask = self._dilate_binary_mask(mask, preview_expand)
+
+        return mask
+
+    def _sample_average_color_hex_at_image_point(self, x: int, y: int) -> str | None:
+        source_rgba = None
+
+        if self._current_mode == "before" and self._before_image_pil is not None:
+            source_rgba = np.array(self._before_image_pil.convert("RGBA"))
+        elif self._editable_rgba is not None:
+            source_rgba = self._editable_rgba
+        elif self._before_image_pil is not None:
+            source_rgba = np.array(self._before_image_pil.convert("RGBA"))
+
+        if source_rgba is None:
+            return None
+
+        img_h, img_w = source_rgba.shape[:2]
+        if x < 0 or y < 0 or x >= img_w or y >= img_h:
+            return None
+
+        sample_size = max(1, int(getattr(self, "_color_pick_sample_size", 1)))
+        radius = sample_size // 2
+
+        x0 = max(0, x - radius)
+        x1 = min(img_w, x + radius + 1)
+        y0 = max(0, y - radius)
+        y1 = min(img_h, y + radius + 1)
+
+        patch = source_rgba[y0:y1, x0:x1, :3].astype(np.float32)
+        if patch.size == 0:
+            return None
+
+        red, green, blue = np.mean(patch, axis=(0, 1))
+        return f"#{int(round(red)):02X}{int(round(green)):02X}{int(round(blue)):02X}"
 
     def set_magic_mode(self, mode: str):
         valid_modes = {"Connected Region", "Global Match"}
@@ -533,8 +930,7 @@ class PreviewCanvas(QFrame):
         if x < 0 or y < 0 or x >= img_w or y >= img_h:
             return None
 
-        red, green, blue = source_rgba[y, x, :3]
-        return f"#{int(red):02X}{int(green):02X}{int(blue):02X}"
+        return self._sample_average_color_hex_at_image_point(x, y)
 
     def set_preview_mode(self):
         self._interaction_mode = "preview"
@@ -628,6 +1024,22 @@ class PreviewCanvas(QFrame):
         self.redo_btn.setEnabled(bool(self._redo_stack))
         self._update_responsive_toolbar_texts()
 
+
+    def _update_mode_buttons(self):
+        self.preview_mode_btn.setChecked(self._interaction_mode == "preview")
+        self.edit_mode_btn.setChecked(self._interaction_mode == "edit")
+        self.before_btn.setChecked(self._current_mode == "before")
+        self.after_btn.setChecked(self._current_mode == "after")
+
+        has_edit_target = self._editable_after_image_pil is not None
+        self.edit_mode_btn.setEnabled(has_edit_target)
+        self.after_btn.setEnabled(has_edit_target)
+        self.reset_edits_btn.setEnabled(has_edit_target and self._edit_reset_baseline_rgba is not None)
+
+        self.undo_btn.setEnabled(self._can_undo())
+        self.redo_btn.setEnabled(bool(self._redo_stack))
+        self._update_responsive_toolbar_texts()
+
     def _get_current_image(self):
         if self._current_mode == "after":
             return self._editable_after_image_pil
@@ -685,6 +1097,44 @@ class PreviewCanvas(QFrame):
             Qt.TransformationMode.SmoothTransformation,
         )
 
+
+        if self._color_removal_preview_enabled and self._interaction_mode == "preview":
+            preview_mask = self._build_color_removal_preview_mask()
+
+            if preview_mask is not None and np.any(preview_mask):
+                display_pixmap = QPixmap(scaled_pixmap)
+                painter = QPainter(display_pixmap)
+                painter.setRenderHint(QPainter.RenderHint.Antialiasing, False)
+
+                img_h, img_w = preview_mask.shape[:2]
+                fill_color = QColor(255, 255, 0, 145)
+                note_color = QColor(255, 255, 255, 210)
+
+                cell_h = max(1, int(round(scaled_height / max(1, img_h))))
+
+                for yy in range(img_h):
+                    row = preview_mask[yy]
+                    xx = 0
+
+                    while xx < img_w:
+                        if not row[xx]:
+                            xx += 1
+                            continue
+
+                        run_start = xx
+                        while xx < img_w and row[xx]:
+                            xx += 1
+                        run_end = xx
+
+                        px = int(round(run_start * scaled_width / max(1, img_w)))
+                        py = int(round(yy * scaled_height / max(1, img_h)))
+                        pw = max(1, int(round((run_end - run_start) * scaled_width / max(1, img_w))))
+                        painter.fillRect(px, py, pw, cell_h, fill_color)
+
+                painter.setPen(QPen(note_color, 1))
+                painter.drawText(12, 24, "Preview: yellow pixels will be removed")
+                painter.end()
+                scaled_pixmap = display_pixmap
 
         if self._color_pick_mode_active:
             display_pixmap = QPixmap(scaled_pixmap)
@@ -1100,8 +1550,56 @@ class PreviewCanvas(QFrame):
 
         self._load_current_mode_pixmap()
 
+
+    def _is_color_pick_mode_active(self) -> bool:
+        return bool(getattr(self, "_color_pick_active", False))
+
+
+    def _finish_color_pick_mode(self):
+        self._color_pick_active = False
+        self._hover_image_point = None
+        self._line_preview_end_point = None
+        self._clear_smart_selection_preview()
+
+        try:
+            self.unsetCursor()
+            self.image_label.unsetCursor()
+            self.scroll_area.viewport().unsetCursor()
+        except Exception:
+            pass
+
+        self.title_label.setText(self._title_text)
+
+        if self._current_pixmap is not None:
+            self._render_current_pixmap()
+
+
+    def begin_color_pick_mode(self):
+        if self._editable_rgba is None and self._before_image_pil is None:
+            return
+
+        self._color_pick_active = True
+        self._hover_image_point = None
+        self._line_preview_end_point = None
+        self._clear_smart_selection_preview()
+        self.title_label.setText(self._title_text)
+
+        try:
+            self.setCursor(Qt.CursorShape.CrossCursor)
+            self.image_label.setCursor(Qt.CursorShape.CrossCursor)
+            self.scroll_area.viewport().setCursor(Qt.CursorShape.CrossCursor)
+        except Exception:
+            pass
+
+        if self._editable_after_image_pil is not None:
+            self._current_mode = "after"
+        elif self._before_image_pil is not None:
+            self._current_mode = "before"
+
+        self._load_current_mode_pixmap()
+
     def handle_mouse_press(self, event):
-        # COLOR_PICK_REPAIR_BRANCH
+        # COLOR_PICK_HARD_RESET_BRANCH
         if self._is_color_pick_mode_active():
             if event.button() != Qt.MouseButton.LeftButton:
                 self._finish_color_pick_mode()
@@ -1119,13 +1617,15 @@ class PreviewCanvas(QFrame):
             if sample_rgba is None and self._before_image_pil is not None:
                 sample_rgba = np.array(self._before_image_pil.convert("RGBA"))
 
-            if sample_rgba is not None:
-                r, g, b = sample_rgba[y, x, :3].astype(int).tolist()
-                self.color_picked.emit(int(r), int(g), int(b))
+            sample_hex = self._sample_average_color_hex_at_image_point(x, y)
+            if sample_hex is not None:
+                rgb = tuple(int(sample_hex.lstrip("#")[i:i + 2], 16) for i in (0, 2, 4))
+                self.color_picked.emit(int(rgb[0]), int(rgb[1]), int(rgb[2]))
 
             self._finish_color_pick_mode()
             return
-        # END_COLOR_PICK_REPAIR_BRANCH
+        # END_COLOR_PICK_HARD_RESET_BRANCH
+
 
 
 
@@ -1146,10 +1646,10 @@ class PreviewCanvas(QFrame):
             if sample_rgba is None and self._before_image_pil is not None:
                 sample_rgba = np.array(self._before_image_pil.convert("RGBA"))
 
-            if sample_rgba is not None:
-                r, g, b = sample_rgba[y, x, :3].astype(int).tolist()
-                if hasattr(self, "color_picked"):
-                    self.color_picked.emit(int(r), int(g), int(b))
+            sample_hex = self._sample_average_color_hex_at_image_point(x, y)
+            if sample_hex is not None and hasattr(self, "color_picked"):
+                rgb = tuple(int(sample_hex.lstrip("#")[i:i + 2], 16) for i in (0, 2, 4))
+                self.color_picked.emit(int(rgb[0]), int(rgb[1]), int(rgb[2]))
 
             self._finish_color_pick_mode()
             return
@@ -1361,11 +1861,12 @@ class PreviewCanvas(QFrame):
         self._save_history_snapshot()
 
     def handle_mouse_leave(self, event):
-        # COLOR_PICK_REPAIR_LEAVE
+        # COLOR_PICK_HARD_RESET_LEAVE
         if self._is_color_pick_mode_active():
             self._finish_color_pick_mode()
             return
-        # END_COLOR_PICK_REPAIR_LEAVE
+        # END_COLOR_PICK_HARD_RESET_LEAVE
+
 
 
 

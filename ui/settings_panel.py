@@ -1,22 +1,31 @@
+import subprocess
 from PySide6.QtWidgets import (
-    QFrame,
-    QVBoxLayout,
-    QLabel,
-    QComboBox,
-    QPushButton,
-    QLineEdit,
-    QFileDialog,
+    QButtonGroup,
     QCheckBox,
-    QSlider,
-    QHBoxLayout,
-    QWidget,
-    QSpinBox,
-    QSizePolicy,
-    QTabWidget,
     QColorDialog,
+    QComboBox,
+    QFileDialog,
+    QFrame,
+    QGridLayout,
+    QGroupBox,
+    QHBoxLayout,
+    QLabel,
+    QLineEdit,
+    QListWidget,
+    QListWidgetItem,
+    QMessageBox,
+    QPushButton,
+    QScrollArea,
+    QSizePolicy,
+    QSlider,
+    QSpinBox,
+    QTabWidget,
+    QTextEdit,
+    QVBoxLayout,
+    QWidget,
 )
-from PySide6.QtCore import Qt, Signal, QSize
-from PySide6.QtGui import QColor, QIcon
+from PySide6.QtCore import Qt, Signal, QSize, QEvent, QUrl
+from PySide6.QtGui import QColor, QIcon, QPixmap, QDesktopServices
 from pathlib import Path
 
 
@@ -213,9 +222,34 @@ class SettingsPanel(QFrame):
         self.panel_tabs = QTabWidget()
         main_layout.addWidget(self.panel_tabs, 1)
 
+        # Each tab has its own scroll area.
+        # This keeps the Settings / Editor / Export tab bar fixed at the top.
+        self.settings_scroll_area = QScrollArea()
+        self.settings_scroll_area.setWidgetResizable(True)
+        self.settings_scroll_area.setFrameShape(QFrame.Shape.NoFrame)
+        self.settings_scroll_area.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self.settings_scroll_area.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+
+        self.editor_scroll_area = QScrollArea()
+        self.editor_scroll_area.setWidgetResizable(True)
+        self.editor_scroll_area.setFrameShape(QFrame.Shape.NoFrame)
+        self.editor_scroll_area.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self.editor_scroll_area.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+
+        self.export_scroll_area = QScrollArea()
+        self.export_scroll_area.setWidgetResizable(True)
+        self.export_scroll_area.setFrameShape(QFrame.Shape.NoFrame)
+        self.export_scroll_area.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self.export_scroll_area.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+
         self.settings_tab = QWidget()
+        self.settings_tab.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.MinimumExpanding)
+
         self.editor_tab = QWidget()
+        self.editor_tab.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.MinimumExpanding)
+
         self.export_tab = QWidget()
+        self.export_tab.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.MinimumExpanding)
 
         self.settings_layout = QVBoxLayout(self.settings_tab)
         self.settings_layout.setContentsMargins(6, 6, 6, 6)
@@ -226,15 +260,24 @@ class SettingsPanel(QFrame):
         self.editor_layout.setSpacing(4)
 
         self.export_layout = QVBoxLayout(self.export_tab)
-        self.export_layout.setContentsMargins(8, 8, 8, 8)
-        self.export_layout.setSpacing(8)
-        self.panel_tabs.addTab(self.settings_tab, "Settings")
-        self.panel_tabs.addTab(self.editor_tab, "Editor")
-        self.panel_tabs.addTab(self.export_tab, "Export")
+        self.export_layout.setContentsMargins(6, 6, 6, 6)
+        self.export_layout.setSpacing(7)
+
+        self.settings_scroll_area.setWidget(self.settings_tab)
+        self.editor_scroll_area.setWidget(self.editor_tab)
+        self.export_scroll_area.setWidget(self.export_tab)
+
+        self.panel_tabs.addTab(self.settings_scroll_area, "Settings")
+        self.panel_tabs.addTab(self.editor_scroll_area, "Editor")
+        self.panel_tabs.addTab(self.export_scroll_area, "Export")
 
         self._build_settings_tab()
         self._build_editor_tab()
         self._build_export_tab()
+        self._ensure_split_process_export_controls()
+        if hasattr(self, "action_section_label"):
+            self.action_section_label.hide()
+        self._apply_remaining_color_removal_tooltips()
         self._connect_internal_signals()
 
         self.update_backend_hint()
@@ -254,6 +297,7 @@ class SettingsPanel(QFrame):
         if hasattr(self, "pick_from_preview_btn"):
             self._apply_dropper_icon_to_preview_button()
         self._apply_color_removal_tooltips()
+        self._install_scroll_wheel_guard()
         self._update_responsive_button_texts()
 
     def _build_settings_tab(self):
@@ -515,6 +559,27 @@ class SettingsPanel(QFrame):
         layout.addWidget(self.color_hex_label)
         layout.addWidget(self.color_hex_row)
 
+        self.color_sample_size_label = QLabel("Picker Sample Size")
+        self.color_sample_size_combo = QComboBox()
+        self.color_sample_size_combo.addItems(["1 px", "3x3", "5x5"])
+        self.color_sample_size_combo.setCurrentText("3x3")
+        self._set_tooltip_for_widgets(
+            "Controls how much area the preview eyedropper samples.\n"
+            "1 px = exact clicked pixel. 3x3 or 5x5 averages nearby pixels for noisy/compressed images.",
+            self.color_sample_size_label,
+            self.color_sample_size_combo,
+        )
+        layout.addWidget(self.color_sample_size_label)
+        layout.addWidget(self.color_sample_size_combo)
+
+        self.color_live_preview_check = QCheckBox("Preview Removed Pixels")
+        self.color_live_preview_check.setChecked(False)
+        self.color_live_preview_check.setToolTip(
+            "Shows a red overlay on the preview for pixels that match the current Color Removal settings.\n"
+            "This is only a preview overlay; it does not process the image until you click Process."
+        )
+        layout.addWidget(self.color_live_preview_check)
+
         self.color_rgb_label = QLabel("RGB")
         self.color_rgb_row = QWidget()
         color_rgb_row_layout = QHBoxLayout(self.color_rgb_row)
@@ -622,12 +687,27 @@ class SettingsPanel(QFrame):
         layout.addWidget(self.color_feather_label)
         layout.addWidget(self.color_feather_row)
 
-        self.color_spill_cleanup_check = QCheckBox("Reduce Color Spill")
-        self.color_spill_cleanup_check.setChecked(True)
-        self.color_spill_cleanup_check.setToolTip(
-            "Attempts to reduce leftover selected-color fringing around semi-transparent edges."
+        self.color_spill_label = QLabel("Color Spill Reduction")
+        self.color_spill_row, self.color_spill_slider, self.color_spill_value_box = self._create_slider_row(0, 100)
+        self.color_spill_slider.setValue(20)
+        self._set_tooltip_for_widgets(
+            "Reduces leftover selected-color tint around semi-transparent edges.\n"
+            "0 = off. 10-25 = gentle cleanup. Higher values are stronger and can dull edge colors.",
+            self.color_spill_label,
+            self.color_spill_row,
+            self.color_spill_slider,
+            self.color_spill_value_box,
         )
-        layout.addWidget(self.color_spill_cleanup_check)
+        layout.addWidget(self.color_spill_label)
+        layout.addWidget(self.color_spill_row)
+
+        self.protect_dark_colors_check = QCheckBox("Protect Dark Colors")
+        self.protect_dark_colors_check.setChecked(True)
+        self.protect_dark_colors_check.setToolTip(
+            "Protects very dark pixels, like black linework or text, from Color Removal.\n"
+            "Turn this off only if you intentionally want to remove a dark/black background."
+        )
+        layout.addWidget(self.protect_dark_colors_check)
         self._update_color_swatch()
 
         self.action_section_label = QLabel("Process")
@@ -962,6 +1042,12 @@ class SettingsPanel(QFrame):
 
         self.naming_label = QLabel("Filename Suffix")
         self.naming_edit = QLineEdit("_nobg")
+        self.naming_edit.setMinimumWidth(0)
+        self.naming_edit.setMaximumWidth(260)
+        self.naming_edit.setSizePolicy(
+            QSizePolicy.Policy.Ignored,
+            QSizePolicy.Policy.Fixed,
+        )
         self.naming_edit.setToolTip(
             "This text is added to the exported filename.\n"
             "The final filename preview below updates from the selected backend, model, suffix, and format."
@@ -1022,6 +1108,7 @@ class SettingsPanel(QFrame):
 
     def _connect_internal_signals(self):
         self.output_dir_btn.clicked.connect(self.choose_output_dir)
+        self.open_output_btn.clicked.connect(self.open_output_folder)
         self.backend_reset_btn.clicked.connect(self.reset_current_backend_settings)
         self.pick_color_btn.clicked.connect(self.choose_removal_color)
         self.color_hex_edit.editingFinished.connect(self._apply_color_hex_from_edit)
@@ -1459,6 +1546,256 @@ class SettingsPanel(QFrame):
             if widget is not None:
                 widget.setToolTip(bg_tip)
 
+
+    def _apply_dropper_icon_to_preview_button(self):
+        if not hasattr(self, "pick_from_preview_btn"):
+            return
+
+        icon_path = Path("/home/yma/MyBGRemover/dropper.png")
+
+        self.pick_from_preview_btn.setText("")
+        self.pick_from_preview_btn.setFixedSize(64, 50)
+        self.pick_from_preview_btn.setMinimumSize(64, 50)
+        self.pick_from_preview_btn.setMaximumSize(64, 50)
+        self.pick_from_preview_btn.setStyleSheet("padding: 0px; margin: 0px;")
+        self.pick_from_preview_btn.setToolTip(
+            "Pick a removal color from the preview image.\n"
+            "Click this button, then click the color you want to remove in the preview."
+        )
+
+        if icon_path.exists():
+            pixmap = QPixmap(str(icon_path))
+            if not pixmap.isNull():
+                self.pick_from_preview_btn.setIcon(QIcon(pixmap))
+                self.pick_from_preview_btn.setIconSize(QSize(46, 46))
+                return
+
+        self.pick_from_preview_btn.setIcon(QIcon())
+        self.pick_from_preview_btn.setText("Pick")
+
+
+    def _apply_color_removal_tooltips(self):
+        tooltip_map = {
+            "color_hex_edit": "Hex color to remove. Example: #FFFFFF removes white.",
+            "color_swatch_btn": "Current Color Removal target color. Click this square to open the normal color picker.",
+            "pick_from_preview_btn": "Pick a removal color from the preview image. Click this button, then click a pixel in the preview.",
+            "color_match_mode_combo": "Connected Edges removes matching color connected to image edges. Global Match removes matching color everywhere.",
+            "color_edge_feather_slider": "Softens the edge of the removed color area. Try 1–3 for cleaner edges.",
+            "color_spill_slider": "Color Spill Reduction controls how strongly leftover selected-color tint is reduced on semi-transparent edge pixels.",
+            "threshold_slider": "Lower threshold removes only very similar colors. Higher threshold removes a wider range of nearby shades.",
+        }
+
+        for attr_name, tooltip in tooltip_map.items():
+            widget = getattr(self, attr_name, None)
+            if widget is not None:
+                widget.setToolTip(tooltip)
+
+        fg_tip = (
+            "Alpha Matting Foreground Threshold.\n"
+            "Controls how certain rembg must be before keeping a pixel as the subject.\n"
+            "Higher = stricter subject detection, which can remove fuzzy hair/edge details.\n"
+            "Lower = keeps more soft detail, but can leave more background attached."
+        )
+        bg_tip = (
+            "Alpha Matting Background Threshold.\n"
+            "Controls how easily rembg treats pixels as definite background.\n"
+            "Higher = removes more possible background, but can cut into soft subject edges.\n"
+            "Lower = more cautious removal, but can leave haze or background fringe."
+        )
+
+        for attr_name in ("rembg_fg_label", "rembg_fg_row", "rembg_fg_slider", "rembg_fg_value_box"):
+            widget = getattr(self, attr_name, None)
+            if widget is not None:
+                widget.setToolTip(fg_tip)
+
+        for attr_name in ("rembg_bg_label", "rembg_bg_row", "rembg_bg_slider", "rembg_bg_value_box"):
+            widget = getattr(self, attr_name, None)
+            if widget is not None:
+                widget.setToolTip(bg_tip)
+
+
+    def _apply_dropper_icon_to_preview_button(self):
+        if not hasattr(self, "pick_from_preview_btn"):
+            return
+
+        self.pick_from_preview_btn.setIcon(QIcon())
+        self.pick_from_preview_btn.setText("⌕")
+        self.pick_from_preview_btn.setFixedSize(52, 42)
+        self.pick_from_preview_btn.setMinimumSize(52, 42)
+        self.pick_from_preview_btn.setMaximumSize(52, 42)
+        self.pick_from_preview_btn.setStyleSheet(
+            "QPushButton { padding: 0px; margin: 0px; font-size: 28px; font-weight: bold; }"
+        )
+        self.pick_from_preview_btn.setToolTip(
+            "Pick a removal color from the preview image.\n"
+            "Click this button, then click a pixel in the preview."
+        )
+
+
+    def _apply_dropper_icon_to_preview_button(self):
+        if not hasattr(self, "pick_from_preview_btn"):
+            return
+
+        self.pick_from_preview_btn.setIcon(QIcon())
+        self.pick_from_preview_btn.setText("⌕")
+        self.pick_from_preview_btn.setFixedSize(56, 46)
+        self.pick_from_preview_btn.setMinimumSize(56, 46)
+        self.pick_from_preview_btn.setMaximumSize(56, 46)
+        self.pick_from_preview_btn.setStyleSheet(
+            "QPushButton { padding: 0px; margin: 0px; font-size: 38px; font-weight: bold; line-height: 42px; }"
+        )
+        self.pick_from_preview_btn.setToolTip(
+            "Pick a removal color from the preview image.\n"
+            "Click this button, then click a pixel in the preview."
+        )
+
+
+    def _install_scroll_wheel_guard(self):
+        guarded_widgets = []
+        guarded_widgets.extend(self.findChildren(QComboBox))
+        guarded_widgets.extend(self.findChildren(QSpinBox))
+        guarded_widgets.extend(self.findChildren(QSlider))
+
+        for widget in guarded_widgets:
+            widget.installEventFilter(self)
+            widget.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
+
+    def eventFilter(self, watched, event):
+        if event.type() == QEvent.Type.Wheel and isinstance(watched, (QComboBox, QSpinBox, QSlider)):
+            return True
+
+        return super().eventFilter(watched, event)
+
+
+    def _insert_above_final_stretch(self, layout, widget):
+        insert_index = layout.count()
+
+        if insert_index > 0:
+            last_item = layout.itemAt(insert_index - 1)
+            if last_item is not None and last_item.spacerItem() is not None:
+                insert_index -= 1
+
+        layout.insertWidget(insert_index, widget)
+
+    def _make_target_action_row(self, target_combo, action_button):
+        row_widget = QWidget()
+        row_layout = QHBoxLayout(row_widget)
+        row_layout.setContentsMargins(0, 0, 0, 0)
+        row_layout.setSpacing(6)
+
+        target_combo.addItems(["Selected", "All"])
+        target_combo.setToolTip(
+            "Choose whether this action uses only checked/selected files or every loaded file."
+        )
+
+        action_button.setMinimumHeight(32)
+        action_button.setToolTip("Run this action using the selected target.")
+
+        row_layout.addWidget(target_combo, 1)
+        row_layout.addWidget(action_button, 1)
+
+        return row_widget
+
+    def _hide_old_process_export_action_row(self):
+        for attr_name in (
+            "action_combo",
+            "target_combo",
+            "run_action_btn",
+            "action_label",
+            "target_label",
+            "run_action_label",
+            "action_section_label",
+        ):
+            widget = getattr(self, attr_name, None)
+            if widget is not None:
+                widget.hide()
+
+    def _ensure_split_process_export_controls(self):
+        if hasattr(self, "process_action_btn") and hasattr(self, "export_action_btn"):
+            return
+
+        self._hide_old_process_export_action_row()
+
+        self.process_section_label = QLabel("Process")
+        self._configure_section_label(self.process_section_label)
+
+        self.process_target_combo = QComboBox()
+        self.process_action_btn = QPushButton("Process")
+        self._configure_action_button(self.process_action_btn)
+
+        self.process_action_row = self._make_target_action_row(
+            self.process_target_combo,
+            self.process_action_btn,
+        )
+        self.process_action_row.setToolTip(
+            "Process creates or updates the preview/background-removal result for the chosen images."
+        )
+
+        self.export_section_label = QLabel("Export")
+        self._configure_section_label(self.export_section_label)
+
+        self.export_target_combo = QComboBox()
+        self.export_action_btn = QPushButton("Export")
+        self._configure_action_button(self.export_action_btn)
+
+        self.export_action_row = self._make_target_action_row(
+            self.export_target_combo,
+            self.export_action_btn,
+        )
+        self.export_action_row.setToolTip(
+            "Export saves the finished full-resolution output files using the Export tab settings."
+        )
+
+        self._insert_above_final_stretch(self.settings_layout, self.process_section_label)
+        self._insert_above_final_stretch(self.settings_layout, self.process_action_row)
+
+        self._insert_above_final_stretch(self.export_layout, self.export_section_label)
+        self._insert_above_final_stretch(self.export_layout, self.export_action_row)
+
+    def _apply_remaining_color_removal_tooltips(self):
+        tooltip_map = {
+            "color_hex_edit": (
+                "Hex color to remove. Example: #FFFFFF removes white. "
+                "You can type the # or leave it out."
+            ),
+            "color_swatch_btn": (
+                "Current Color Removal target color. Click this square to open the normal color picker."
+            ),
+            "pick_from_preview_btn": (
+                "Pick a removal color from the preview image. Click this button, then click a pixel in the preview."
+            ),
+            "color_match_mode_combo": (
+                "Connected Edges removes matching color connected to the image edges. "
+                "Global Match removes matching color everywhere in the image."
+            ),
+            "color_edge_feather_slider": (
+                "Softens the edge of the removed color area. Try 1 to 3 for cleaner edges. "
+                "Higher values can make edges too soft."
+            ),
+            "color_spill_slider": (
+                "Color Spill Reduction controls how strongly leftover selected-color tint is reduced on semi-transparent edge pixels."
+            ),
+            "threshold_slider": (
+                "Color Removal tolerance. Lower values remove only very similar colors. "
+                "Higher values remove a wider range of nearby shades."
+            ),
+        }
+
+        for attr_name, tooltip in tooltip_map.items():
+            widget = getattr(self, attr_name, None)
+            if widget is not None:
+                widget.setToolTip(tooltip)
+
+        for attr_name in ("color_r_spin", "color_g_spin", "color_b_spin"):
+            widget = getattr(self, attr_name, None)
+            if widget is not None:
+                widget.setToolTip("RGB channel for the removal color. Use 0 to 255.")
+
+        for attr_name in ("color_c_spin", "color_m_spin", "color_y_spin", "color_k_spin"):
+            widget = getattr(self, attr_name, None)
+            if widget is not None:
+                widget.setToolTip("CMYK channel for the removal color. Use 0 to 100.")
+
     def _set_tooltip_for_widgets(self, tooltip: str, *widgets):
         for widget in widgets:
             if widget is not None:
@@ -1666,6 +2003,23 @@ class SettingsPanel(QFrame):
     def get_color_threshold(self) -> int:
         return self.threshold_slider.value()
 
+    def get_color_sample_size(self) -> int:
+        if not hasattr(self, "color_sample_size_combo"):
+            return 1
+
+        text = self.color_sample_size_combo.currentText().strip().lower()
+
+        if text.startswith("5"):
+            return 5
+        if text.startswith("3"):
+            return 3
+        return 1
+
+    def get_color_live_preview_enabled(self) -> bool:
+        if hasattr(self, "color_live_preview_check"):
+            return self.color_live_preview_check.isChecked()
+        return False
+
     def get_color_match_mode(self) -> str:
         if hasattr(self, "color_match_mode_combo"):
             return self.color_match_mode_combo.currentText().strip()
@@ -1676,10 +2030,21 @@ class SettingsPanel(QFrame):
             return self.color_feather_slider.value()
         return 0
 
-    def get_color_spill_cleanup(self) -> bool:
+    def get_color_spill_reduction(self) -> int:
+        if hasattr(self, "color_spill_slider"):
+            return self.color_spill_slider.value()
         if hasattr(self, "color_spill_cleanup_check"):
-            return self.color_spill_cleanup_check.isChecked()
-        return False
+            return 20 if self.color_spill_cleanup_check.isChecked() else 0
+        return 0
+
+    def get_color_spill_cleanup(self) -> bool:
+        # Backward-compatible helper for older code paths.
+        return self.get_color_spill_reduction() > 0
+
+    def get_protect_dark_colors(self) -> bool:
+        if hasattr(self, "protect_dark_colors_check"):
+            return self.protect_dark_colors_check.isChecked()
+        return True
 
     def _create_slider_row(self, min_value: int, max_value: int):
         row_widget = QWidget()
@@ -1755,6 +2120,13 @@ class SettingsPanel(QFrame):
 
         if hasattr(self, "pick_from_preview_btn"):
             self._apply_dropper_icon_to_preview_button()
+
+        if hasattr(self, "action_combo"):
+            self._hide_old_process_export_action_row()
+        if hasattr(self, "process_action_btn"):
+            self.process_action_btn.setText("Process")
+        if hasattr(self, "export_action_btn"):
+            self.export_action_btn.setText("Export")
 
     def _set_slider_and_box_value(self, slider: QSlider, value_box: QSpinBox, value: int):
         slider.blockSignals(True)
@@ -2000,6 +2372,80 @@ class SettingsPanel(QFrame):
         if event.button() == Qt.MouseButton.LeftButton:
             self.choose_removal_color()
 
+
+    def open_output_folder(self):
+        output_text = self.output_dir_edit.text().strip()
+
+        if not output_text:
+            QMessageBox.warning(
+                self,
+                "No output folder",
+                "Choose an output folder first.",
+            )
+            return
+
+        output_path = Path(output_text).expanduser()
+
+        if not output_path.exists():
+            QMessageBox.warning(
+                self,
+                "Output folder not found",
+                f"The output folder does not exist:\n{output_path}",
+            )
+            return
+
+        if not output_path.is_dir():
+            QMessageBox.warning(
+                self,
+                "Output path is not a folder",
+                f"This path is not a folder:\n{output_path}",
+            )
+            return
+
+        QDesktopServices.openUrl(QUrl.fromLocalFile(str(output_path)))
+
+
+    def open_output_folder(self):
+        output_text = self.output_dir_edit.text().strip()
+
+        if not output_text:
+            QMessageBox.warning(
+                self,
+                "No output folder",
+                "Choose an output folder first.",
+            )
+            return
+
+        output_path = Path(output_text).expanduser()
+
+        if not output_path.exists():
+            QMessageBox.warning(
+                self,
+                "Output folder not found",
+                f"The output folder does not exist:\n{output_path}",
+            )
+            return
+
+        if not output_path.is_dir():
+            QMessageBox.warning(
+                self,
+                "Output path is not a folder",
+                f"This path is not a folder:\n{output_path}",
+            )
+            return
+
+        opened = QDesktopServices.openUrl(QUrl.fromLocalFile(str(output_path)))
+
+        if not opened:
+            try:
+                subprocess.Popen(["xdg-open", str(output_path)])
+            except Exception as exc:
+                QMessageBox.warning(
+                    self,
+                    "Could not open folder",
+                    f"Could not open this folder:\n{output_path}\n\n{exc}",
+                )
+
     def choose_output_dir(self):
         folder = QFileDialog.getExistingDirectory(self, "Choose Output Folder")
         if folder:
@@ -2191,6 +2637,9 @@ class SettingsPanel(QFrame):
         self.color_hex_label.setVisible(is_color_mode)
         self.color_hex_row.setVisible(is_color_mode)
         self.pick_preview_color_btn.setVisible(is_color_mode)
+        self.color_sample_size_label.setVisible(is_color_mode)
+        self.color_sample_size_combo.setVisible(is_color_mode)
+        self.color_live_preview_check.setVisible(is_color_mode)
         self.color_rgb_label.setVisible(is_color_mode)
         self.color_rgb_row.setVisible(is_color_mode)
         self.color_cmyk_label.setVisible(is_color_mode)
@@ -2201,7 +2650,9 @@ class SettingsPanel(QFrame):
         self.threshold_row.setVisible(is_color_mode)
         self.color_feather_label.setVisible(is_color_mode)
         self.color_feather_row.setVisible(is_color_mode)
-        self.color_spill_cleanup_check.setVisible(is_color_mode)
+        self.color_spill_label.setVisible(is_color_mode)
+        self.color_spill_row.setVisible(is_color_mode)
+        self.protect_dark_colors_check.setVisible(is_color_mode)
 
         self.backend_label.setVisible(show_ai_controls)
         self.backend_combo.setVisible(show_ai_controls)

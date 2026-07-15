@@ -184,18 +184,14 @@ class MainWindow(QMainWindow):
         self.preview_canvas.setMinimumWidth(300)
 
         self.settings_panel = SettingsPanel()
-        self.settings_scroll = QScrollArea()
-        self.settings_scroll.setWidget(self.settings_panel)
-        self.settings_scroll.setWidgetResizable(True)
 
         self.preview_mode_action = QAction("Preview Mode", self)
-        self.settings_scroll.setFrameShape(QFrame.Shape.NoFrame)
 
         self._create_menu_bar()
 
         self.content_splitter.addWidget(self.file_panel)
         self.content_splitter.addWidget(self.preview_canvas)
-        self.content_splitter.addWidget(self.settings_scroll)
+        self.content_splitter.addWidget(self.settings_panel)
         self.content_splitter.setSizes([430, 780, 390])
         self.content_splitter.setStretchFactor(0, 0)
         self.content_splitter.setStretchFactor(1, 1)
@@ -1780,8 +1776,19 @@ class MainWindow(QMainWindow):
             self.settings_panel.color_match_mode_combo.currentTextChanged.connect(self._persist_color_removal_match_mode)
         if hasattr(self.settings_panel, "color_feather_slider"):
             self.settings_panel.color_feather_slider.valueChanged.connect(self._persist_color_removal_feather)
+        if hasattr(self.settings_panel, "pick_color_btn"):
+            self.settings_panel.pick_color_btn.clicked.connect(lambda: self._update_color_removal_preview_overlay())
+        if hasattr(self.settings_panel, "color_swatch_btn"):
+            self.settings_panel.color_swatch_btn.clicked.connect(lambda: self._update_color_removal_preview_overlay())
+        self.settings_panel.color_sample_size_combo.currentTextChanged.connect(self._persist_color_removal_sample_size)
+        self.settings_panel.color_live_preview_check.toggled.connect(self._persist_color_removal_live_preview)
+        self.settings_panel.color_hex_edit.editingFinished.connect(self._update_color_removal_preview_overlay)
+        self.settings_panel.threshold_slider.valueChanged.connect(lambda _value: self._update_color_removal_preview_overlay())
+        self.settings_panel.color_match_mode_combo.currentTextChanged.connect(lambda _value: self._update_color_removal_preview_overlay())
+        self.settings_panel.color_feather_slider.valueChanged.connect(lambda _value: self._update_color_removal_preview_overlay())
         if hasattr(self.settings_panel, "color_spill_cleanup_check"):
-            self.settings_panel.color_spill_cleanup_check.toggled.connect(self._persist_color_removal_reduce_spill)
+            self.settings_panel.color_spill_slider.valueChanged.connect(self._persist_color_removal_spill_reduction)
+        self.settings_panel.protect_dark_colors_check.toggled.connect(self._persist_color_removal_protect_dark)
         for color_widget_name in (
             "color_r_spin", "color_g_spin", "color_b_spin",
             "color_c_spin", "color_m_spin", "color_y_spin", "color_k_spin",
@@ -1796,6 +1803,10 @@ class MainWindow(QMainWindow):
        
         if hasattr(self.settings_panel, "color_pick_from_preview_requested"):
             self.settings_panel.color_pick_from_preview_requested.connect(self.preview_canvas.begin_color_pick_mode)
+        if hasattr(self.settings_panel, "process_action_btn"):
+            self.settings_panel.process_action_btn.clicked.connect(self.run_process_action)
+        if hasattr(self.settings_panel, "export_action_btn"):
+            self.settings_panel.export_action_btn.clicked.connect(self.run_export_action)
         self.settings_panel.run_action_btn.clicked.connect(self.run_selected_action)
         self.settings_panel.cancel_btn.clicked.connect(self.request_cancel)
 
@@ -2529,6 +2540,31 @@ class MainWindow(QMainWindow):
         )
         self._update_canvas_smart_settings()
 
+
+    def run_process_action(self):
+        target_widget = getattr(self.settings_panel, "process_target_combo", None)
+        if target_widget is None:
+            target_widget = self.settings_panel.target_combo
+
+        target = target_widget.currentText()
+
+        if target == "Selected":
+            self.process_checked_items()
+        else:
+            self.process_all_items()
+
+    def run_export_action(self):
+        target_widget = getattr(self.settings_panel, "export_target_combo", None)
+        if target_widget is None:
+            target_widget = self.settings_panel.target_combo
+
+        target = target_widget.currentText()
+
+        if target == "Selected":
+            self.export_checked_items()
+        else:
+            self.export_all_items()
+
     def run_selected_action(self):
         action = self.settings_panel.action_combo.currentText()
         target = self.settings_panel.target_combo.currentText()
@@ -2769,6 +2805,10 @@ class MainWindow(QMainWindow):
                 "prefs/color_removal_hex",
                 self.settings_panel.get_selected_removal_hex(),
             )
+        if hasattr(self, "_update_color_removal_preview_overlay"):
+            self._update_color_removal_preview_overlay()
+        if hasattr(self, "_update_color_removal_preview_overlay"):
+            self._update_color_removal_preview_overlay()
 
     def _persist_color_removal_threshold(self, value: int):
         self.settings_store.setValue("prefs/color_removal_threshold", int(value))
@@ -2779,8 +2819,24 @@ class MainWindow(QMainWindow):
     def _persist_color_removal_feather(self, value: int):
         self.settings_store.setValue("prefs/color_removal_feather", int(value))
 
+    def _persist_color_removal_spill_reduction(self, value: int):
+        self.settings_store.setValue("prefs/color_removal_spill_reduction", int(value))
+        if hasattr(self, "_update_color_removal_preview_overlay"):
+            self._update_color_removal_preview_overlay()
+        if hasattr(self, "_update_color_removal_preview_overlay"):
+            self._update_color_removal_preview_overlay()
+
     def _persist_color_removal_reduce_spill(self, checked: bool):
+        # Backward-compatible old checkbox preference.
         self.settings_store.setValue("prefs/color_removal_reduce_spill", bool(checked))
+        self.settings_store.setValue("prefs/color_removal_spill_reduction", 20 if checked else 0)
+
+    def _persist_color_removal_protect_dark(self, checked: bool):
+        self.settings_store.setValue("prefs/color_removal_protect_dark", bool(checked))
+        if hasattr(self, "_update_color_removal_preview_overlay"):
+            self._update_color_removal_preview_overlay()
+        if hasattr(self, "_update_color_removal_preview_overlay"):
+            self._update_color_removal_preview_overlay()
 
     def _begin_preview_color_pick(self):
         if not hasattr(self.preview_canvas, "begin_color_pick_mode"):
@@ -2791,6 +2847,11 @@ class MainWindow(QMainWindow):
             )
             return
 
+        if hasattr(self.preview_canvas, "set_color_pick_sample_size"):
+            self.preview_canvas.set_color_pick_sample_size(
+                self.settings_panel.get_color_sample_size()
+            )
+
         self.preview_canvas.begin_color_pick_mode()
         self.log("Color Removal: click a pixel in the preview to pick the target color.")
 
@@ -2798,6 +2859,7 @@ class MainWindow(QMainWindow):
         if hasattr(self.settings_panel, "set_selected_removal_hex"):
             self.settings_panel.set_selected_removal_hex(color_hex)
             self._persist_color_removal_hex()
+            self._update_color_removal_preview_overlay()
             self.log(f"Color Removal target picked from preview: {color_hex}")
 
     def _current_removal_mode(self) -> str:
@@ -2813,7 +2875,37 @@ class MainWindow(QMainWindow):
             "match_mode": self.settings_panel.get_color_match_mode(),
             "feather": self.settings_panel.get_color_feather(),
             "reduce_spill": self.settings_panel.get_color_spill_cleanup(),
+            "spill_reduction": self.settings_panel.get_color_spill_reduction(),
+            "protect_dark_colors": self.settings_panel.get_protect_dark_colors(),
+            "sample_size": self.settings_panel.get_color_sample_size(),
+            "live_preview": self.settings_panel.get_color_live_preview_enabled(),
         }
+
+    def _update_color_removal_preview_overlay(self):
+        if not hasattr(self.preview_canvas, "set_color_removal_preview_options"):
+            return
+
+        if self._current_removal_mode() != "Color Removal":
+            self.preview_canvas.set_color_removal_preview_options(False, {})
+            return
+
+        options = self._current_color_removal_options()
+
+        if hasattr(self.preview_canvas, "set_color_pick_sample_size"):
+            self.preview_canvas.set_color_pick_sample_size(options.get("sample_size", 3))
+
+        self.preview_canvas.set_color_removal_preview_options(
+            bool(options.get("live_preview", False)),
+            options,
+        )
+
+    def _persist_color_removal_sample_size(self, value: str):
+        self.settings_store.setValue("prefs/color_removal_sample_size", value)
+        self._update_color_removal_preview_overlay()
+
+    def _persist_color_removal_live_preview(self, checked: bool):
+        self.settings_store.setValue("prefs/color_removal_live_preview", bool(checked))
+        self._update_color_removal_preview_overlay()
 
     def _persist_backend_selection(self, backend_name: str):
         self.settings_store.setValue("prefs/backend", backend_name)
