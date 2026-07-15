@@ -1,4 +1,5 @@
 import json
+from pathlib import Path
 
 from PySide6.QtCore import Qt, QSettings
 from PySide6.QtGui import QKeySequence
@@ -22,6 +23,7 @@ from PySide6.QtWidgets import (
     QPlainTextEdit,
     QScrollArea,
     QSlider,
+    QSpinBox,
     QTabWidget,
     QVBoxLayout,
     QWidget,
@@ -83,6 +85,178 @@ class PreferencesDialog(QDialog):
         self._refresh_preset_manager()
         self._ensure_default_preset_names()
         self._apply_search_filter()
+        self._apply_dialog_styles()
+
+    def _apply_dialog_styles(self):
+        check_icon_path = (Path(__file__).resolve().parent / "assets" / "checkmark.svg").as_posix()
+
+        self.setStyleSheet(f"""
+            QDialog {{
+                background: #2f2f2f;
+                color: #f0f0f0;
+            }}
+
+            QGroupBox {{
+                border: 1px solid #5f5f5f;
+                border-radius: 8px;
+                margin-top: 10px;
+                padding-top: 10px;
+                background: #343434;
+                font-weight: bold;
+            }}
+
+            QGroupBox::title {{
+                subcontrol-origin: margin;
+                left: 10px;
+                padding: 0 4px 0 4px;
+                color: #ffffff;
+            }}
+
+            QLabel {{
+                color: #f0f0f0;
+            }}
+
+            QLineEdit,
+            QPlainTextEdit,
+            QListWidget,
+            QComboBox,
+            QKeySequenceEdit,
+            QScrollArea,
+            QSpinBox {{
+                background: #1f1f1f;
+                color: #f0f0f0;
+                border: 1px solid #666666;
+                border-radius: 5px;
+                padding: 4px;
+                selection-background-color: #AD2831;
+                selection-color: #ffffff;
+            }}
+
+            QLineEdit:hover,
+            QPlainTextEdit:hover,
+            QListWidget:hover,
+            QComboBox:hover,
+            QKeySequenceEdit:hover,
+            QSpinBox:hover {{
+                border: 1px solid #8a8a8a;
+            }}
+
+            QLineEdit:focus,
+            QPlainTextEdit:focus,
+            QListWidget:focus,
+            QComboBox:focus,
+            QKeySequenceEdit:focus,
+            QSpinBox:focus {{
+                border: 1px solid #AD2831;
+            }}
+
+            QListWidget::item {{
+                padding: 4px;
+                border-radius: 4px;
+            }}
+
+            QListWidget::item:hover {{
+                background: #444444;
+            }}
+
+            QListWidget::item:selected {{
+                background: #AD2831;
+                color: #ffffff;
+            }}
+
+            QPushButton {{
+                background: #4a4a4a;
+                color: #ffffff;
+                border: 1px solid #777777;
+                border-radius: 6px;
+                padding: 6px 10px;
+            }}
+
+            QPushButton:hover {{
+                background: #5c5c5c;
+                border: 1px solid #9a9a9a;
+            }}
+
+            QPushButton:pressed {{
+                background: #6b6b6b;
+                border: 1px solid #b0b0b0;
+            }}
+
+            QPushButton:disabled {{
+                background: #3a3a3a;
+                color: #999999;
+                border: 1px solid #555555;
+            }}
+
+            QTabWidget::pane {{
+                border: 1px solid #5f5f5f;
+                background: #2f2f2f;
+            }}
+
+            QTabBar::tab {{
+                background: #3a3a3a;
+                color: #f0f0f0;
+                border: 1px solid #5f5f5f;
+                padding: 6px 12px;
+                margin-right: 2px;
+                border-top-left-radius: 5px;
+                border-top-right-radius: 5px;
+            }}
+
+            QTabBar::tab:selected {{
+                background: #AD2831;
+                color: #ffffff;
+            }}
+
+            QTabBar::tab:hover:!selected {{
+                background: #4d4d4d;
+            }}
+
+            QCheckBox {{
+                color: #f0f0f0;
+            }}
+
+            QCheckBox::indicator {{
+                width: 18px;
+                height: 18px;
+                border: 1px solid #888888;
+                border-radius: 4px;
+                background: #1f1f1f;
+            }}
+
+            QCheckBox::indicator:hover {{
+                border: 1px solid #a5a5a5;
+            }}
+
+            QCheckBox::indicator:checked {{
+                background: #1f1f1f;
+                border: 1px solid #AD2831;
+                image: url("{check_icon_path}");
+            }}
+
+            QSlider::groove:horizontal {{
+                height: 6px;
+                background: #444444;
+                border-radius: 3px;
+            }}
+
+            QSlider::sub-page:horizontal {{
+                background: #AD2831;
+                border-radius: 3px;
+            }}
+
+            QSlider::handle:horizontal {{
+                background: #d8d8d8;
+                border: 1px solid #8a8a8a;
+                width: 14px;
+                margin: -5px 0;
+                border-radius: 7px;
+            }}
+
+            QSlider::handle:horizontal:hover {{
+                background: #f0f0f0;
+            }}
+        """)
 
     def _build_ui(self):
         main_layout = QVBoxLayout(self)
@@ -130,7 +304,7 @@ class PreferencesDialog(QDialog):
         self.reset_btn.clicked.connect(self._reset_to_builtin_defaults)
         self.button_box.accepted.connect(self._on_accept)
         self.button_box.rejected.connect(self.reject)
-        self.button_box.button(QDialogButtonBox.StandardButton.Apply).clicked.connect(self.save_settings)
+        self.button_box.button(QDialogButtonBox.StandardButton.Apply).clicked.connect(self._on_apply)
 
     def _create_scrolling_tab(self, tab_name: str):
         tab_wrapper = QWidget()
@@ -208,6 +382,7 @@ class PreferencesDialog(QDialog):
                 or is_magic
                 or is_background
             ),
+            "flow": is_brush and is_erase_restore,
             "spacing": (
                 (is_erase_restore and is_brush)
                 or (is_magic and is_brush)
@@ -216,6 +391,9 @@ class PreferencesDialog(QDialog):
             "tolerance": is_magic or is_background,
             "magic_mode": is_magic,
             "edge_protect": is_magic or is_background,
+            "smart_feather": is_smart,
+            "smart_expand": is_smart,
+            "smart_cleanup": is_smart,
         }
 
     def _create_slider_row(self, min_value: int, max_value: int, parent: QWidget | None = None):
@@ -227,16 +405,18 @@ class PreferencesDialog(QDialog):
         slider = QSlider(Qt.Orientation.Horizontal, row_widget)
         slider.setRange(min_value, max_value)
 
-        value_label = QLabel("0", row_widget)
-        value_label.setMinimumWidth(36)
-        value_label.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+        value_box = QSpinBox(row_widget)
+        value_box.setRange(min_value, max_value)
+        value_box.setFixedWidth(72)
+        value_box.setKeyboardTracking(False)
 
-        slider.valueChanged.connect(lambda value: value_label.setText(str(value)))
+        slider.valueChanged.connect(value_box.setValue)
+        value_box.valueChanged.connect(slider.setValue)
 
         row_layout.addWidget(slider, 1)
-        row_layout.addWidget(value_label)
+        row_layout.addWidget(value_box)
 
-        return row_widget, slider, value_label
+        return row_widget, slider, value_box
 
     def _create_form_label(self, text: str, parent: QWidget | None = None):
         label = QLabel(text, parent)
@@ -344,6 +524,36 @@ class PreferencesDialog(QDialog):
             output_group,
             "output export output format background mode solid background color open output after export zip overwrite skip exported skip processed",
         )
+        
+        watch_group = QGroupBox("Watch Folder")
+        watch_layout = QVBoxLayout(watch_group)
+
+        watch_path_row = QHBoxLayout()
+        self.watch_folder_edit = QLineEdit()
+        self.watch_folder_edit.setPlaceholderText("Choose a folder to monitor")
+        self.watch_folder_btn = QPushButton("Choose Watch Folder")
+        watch_path_row.addWidget(self.watch_folder_edit, 1)
+        watch_path_row.addWidget(self.watch_folder_btn)
+
+        self.watch_include_subfolders_check = QCheckBox("Include subfolders in watch folder")
+        self.watch_enable_check = QCheckBox("Enable watch folder automation now")
+        self.watch_status_label = QLabel("Watch status: Off — No folder selected")
+        self.watch_status_label.setWordWrap(True)
+
+        watch_layout.addWidget(QLabel("Watch Folder Path"))
+        watch_layout.addLayout(watch_path_row)
+        watch_layout.addWidget(self.watch_include_subfolders_check)
+        watch_layout.addWidget(self.watch_enable_check)
+        watch_layout.addWidget(self.watch_status_label)
+
+        self.general_layout.addWidget(watch_group)
+        self._register_search_target(
+            self.general_tab,
+            watch_group,
+            "watch folder path include subfolders enable watch folder automation status",
+        )
+
+        self.watch_folder_btn.clicked.connect(self._choose_watch_folder)
 
         self.general_reset_btn = QPushButton("Reset General Settings")
         self.general_reset_btn.clicked.connect(self._reset_general_tab)
@@ -351,6 +561,11 @@ class PreferencesDialog(QDialog):
         self._register_search_target(self.general_tab, self.general_reset_btn, "reset general settings")
 
         self.general_layout.addStretch()
+
+    def _choose_watch_folder(self):
+        folder = QFileDialog.getExistingDirectory(self, "Choose Watch Folder")
+        if folder:
+            self.watch_folder_edit.setText(folder)
 
     def _build_editor_tab(self):
         intro_label = QLabel(
@@ -367,6 +582,10 @@ class PreferencesDialog(QDialog):
         self.editor_full_preset_name_edit.setPlaceholderText("Preset 1")
         self.editor_save_full_preset_btn = QPushButton("Save Full Preset")
         self._make_compact_button(self.editor_save_full_preset_btn)
+
+        self.editor_save_full_preset_btn.setToolTip(
+            "Saves all current Editor defaults for every tool and mode as one full preset."
+        )
 
         full_preset_row.addWidget(QLabel("Preset Name"))
         full_preset_row.addWidget(self.editor_full_preset_name_edit, 1)
@@ -404,41 +623,150 @@ class PreferencesDialog(QDialog):
                 visible_mode_header.setStyleSheet("font-weight: bold; font-size: 13px;")
                 form.addRow(visible_mode_header)
 
+                # Sliders
                 brush_size_row, brush_size_slider, brush_size_value = self._create_slider_row(1, 200, mode_group)
                 softness_row, softness_slider, softness_value = self._create_slider_row(0, 100, mode_group)
                 opacity_row, opacity_slider, opacity_value = self._create_slider_row(1, 100, mode_group)
+                flow_row, flow_slider, flow_value = self._create_slider_row(1, 100, mode_group)
                 spacing_row, spacing_slider, spacing_value = self._create_slider_row(1, 100, mode_group)
                 tolerance_row, tolerance_slider, tolerance_value = self._create_slider_row(0, 255, mode_group)
-                tolerance_row.setVisible(False)
 
+                smart_feather_row, smart_feather_slider, smart_feather_value = self._create_slider_row(0, 25, mode_group)
+                smart_expand_row, smart_expand_slider, smart_expand_value = self._create_slider_row(-10, 10, mode_group)
+
+                # Combo boxes / checkboxes
                 magic_mode_combo = QComboBox(mode_group)
                 magic_mode_combo.addItems(["Connected Region", "Global Match"])
-                magic_mode_combo.setVisible(False)
 
                 edge_protect_check = QCheckBox("Enable Edge Protect", mode_group)
-                edge_protect_check.setVisible(False)
+                smart_cleanup_holes_check = QCheckBox("Fill Small Holes", mode_group)
+                smart_cleanup_speckles_check = QCheckBox("Remove Speckles", mode_group)
 
+                # Labels
                 brush_size_label = self._create_form_label("Brush Size", mode_group)
                 softness_label = self._create_form_label("Softness", mode_group)
                 opacity_label = self._create_form_label("Opacity", mode_group)
+                flow_label = self._create_form_label("Flow", mode_group)
                 spacing_label = self._create_form_label("Spacing", mode_group)
                 tolerance_label = self._create_form_label("Tolerance", mode_group)
                 magic_mode_label = self._create_form_label("Magic Mode", mode_group)
+                smart_feather_label = self._create_form_label("Selection Feather", mode_group)
+                smart_expand_label = self._create_form_label("Expand / Contract", mode_group)
 
+                # Tooltips
+                brush_size_tip = (
+                    "Controls the size of the brush or Smart Selection click area."
+                )
+                softness_tip = (
+                    "Controls brush edge softness.\n"
+                    "Lower values create a harder edge. Higher values create a softer edge."
+                )
+                opacity_tip = (
+                    "Controls the maximum strength of the edit."
+                )
+                flow_tip = (
+                    "Controls how quickly Erase/Restore brush strokes build up while dragging.\n"
+                    "Flow 100 applies full strength immediately. Lower values build gradually."
+                )
+                spacing_tip = (
+                    "Controls the distance between brush stamps during a stroke.\n"
+                    "Lower values make strokes smoother but can be slower."
+                )
+                tolerance_tip = (
+                    "Controls how closely colors must match for Magic Erase and Background Erase.\n"
+                    "Lower values affect fewer colors. Higher values affect a wider color range."
+                )
+                magic_mode_tip = (
+                    "Connected Region affects only the clicked connected area.\n"
+                    "Global Match affects matching areas across the full preview."
+                )
+                edge_protect_tip = (
+                    "Protects likely subject edges while using Magic Erase or Background Erase."
+                )
+                smart_feather_tip = (
+                    "Softens the edge of Smart Selection results.\n"
+                    "Use a small value for cleaner, less jagged selection edges."
+                )
+                smart_expand_tip = (
+                    "Adjusts Smart Selection size after selection.\n"
+                    "Negative values contract/shrink the selection. Positive values expand/grow it."
+                )
+                smart_cleanup_holes_tip = (
+                    "Fills small transparent holes inside Smart Selection results."
+                )
+                smart_cleanup_speckles_tip = (
+                    "Removes tiny isolated artifacts from Smart Selection results."
+                )
+
+                for widget in (brush_size_label, brush_size_row, brush_size_slider, brush_size_value):
+                    widget.setToolTip(brush_size_tip)
+
+                for widget in (softness_label, softness_row, softness_slider, softness_value):
+                    widget.setToolTip(softness_tip)
+
+                for widget in (opacity_label, opacity_row, opacity_slider, opacity_value):
+                    widget.setToolTip(opacity_tip)
+
+                for widget in (flow_label, flow_row, flow_slider, flow_value):
+                    widget.setToolTip(flow_tip)
+
+                for widget in (spacing_label, spacing_row, spacing_slider, spacing_value):
+                    widget.setToolTip(spacing_tip)
+
+                for widget in (tolerance_label, tolerance_row, tolerance_slider, tolerance_value):
+                    widget.setToolTip(tolerance_tip)
+
+                for widget in (magic_mode_label, magic_mode_combo):
+                    widget.setToolTip(magic_mode_tip)
+
+                edge_protect_check.setToolTip(edge_protect_tip)
+
+                for widget in (smart_feather_label, smart_feather_row, smart_feather_slider, smart_feather_value):
+                    widget.setToolTip(smart_feather_tip)
+
+                for widget in (smart_expand_label, smart_expand_row, smart_expand_slider, smart_expand_value):
+                    widget.setToolTip(smart_expand_tip)
+
+                smart_cleanup_holes_check.setToolTip(smart_cleanup_holes_tip)
+                smart_cleanup_speckles_check.setToolTip(smart_cleanup_speckles_tip)
+
+                save_preset_tip = (
+                    "Saves the current values for this specific tool and mode."
+                )
+                save_preset_as_tip = (
+                    "Saves the current values for this specific tool and mode with a custom name and notes."
+                )
+
+                # Rows in the order they should appear
                 form.addRow(brush_size_label, brush_size_row)
                 form.addRow(softness_label, softness_row)
                 form.addRow(opacity_label, opacity_row)
+                form.addRow(flow_label, flow_row)
                 form.addRow(spacing_label, spacing_row)
+                form.addRow(tolerance_label, tolerance_row)
+                form.addRow(magic_mode_label, magic_mode_combo)
+                form.addRow(smart_feather_label, smart_feather_row)
+                form.addRow(smart_expand_label, smart_expand_row)
+                form.addRow("", smart_cleanup_holes_check)
+                form.addRow("", smart_cleanup_speckles_check)
+                form.addRow("", edge_protect_check)
 
                 visibility = self._editor_field_visibility(tool_name, mode_name)
 
+                brush_size_label.setVisible(visibility["brush_size"])
                 brush_size_row.setVisible(visibility["brush_size"])
-                softness_row.setVisible(visibility["softness"])
-                opacity_row.setVisible(visibility["opacity"])
-                spacing_row.setVisible(visibility["spacing"])
 
-                form.addRow(tolerance_label, tolerance_row)
-                form.addRow(magic_mode_label, magic_mode_combo)
+                softness_label.setVisible(visibility["softness"])
+                softness_row.setVisible(visibility["softness"])
+
+                opacity_label.setVisible(visibility["opacity"])
+                opacity_row.setVisible(visibility["opacity"])
+
+                flow_label.setVisible(visibility["flow"])
+                flow_row.setVisible(visibility["flow"])
+
+                spacing_label.setVisible(visibility["spacing"])
+                spacing_row.setVisible(visibility["spacing"])
 
                 tolerance_label.setVisible(visibility["tolerance"])
                 tolerance_row.setVisible(visibility["tolerance"])
@@ -446,15 +774,24 @@ class PreferencesDialog(QDialog):
                 magic_mode_label.setVisible(visibility["magic_mode"])
                 magic_mode_combo.setVisible(visibility["magic_mode"])
 
-                if visibility["edge_protect"]:
-                    edge_protect_check.setVisible(True)
-                    form.addRow("", edge_protect_check)
+                smart_feather_label.setVisible(visibility["smart_feather"])
+                smart_feather_row.setVisible(visibility["smart_feather"])
+
+                smart_expand_label.setVisible(visibility["smart_expand"])
+                smart_expand_row.setVisible(visibility["smart_expand"])
+
+                smart_cleanup_holes_check.setVisible(visibility["smart_cleanup"])
+                smart_cleanup_speckles_check.setVisible(visibility["smart_cleanup"])
+
+                edge_protect_check.setVisible(visibility["edge_protect"])
 
                 button_row = QHBoxLayout()
                 button_row.addStretch()
 
                 save_preset_btn = QPushButton("Save Preset")
                 save_preset_as_btn = QPushButton("Save Preset...")
+                save_preset_btn.setToolTip(save_preset_tip)
+                save_preset_as_btn.setToolTip(save_preset_as_tip)
                 self._make_compact_button(save_preset_btn)
                 self._make_compact_button(save_preset_as_btn)
 
@@ -475,6 +812,10 @@ class PreferencesDialog(QDialog):
                     "opacity_row": opacity_row,
                     "opacity_slider": opacity_slider,
                     "opacity_value": opacity_value,
+                    "flow_label": flow_label,
+                    "flow_row": flow_row,
+                    "flow_slider": flow_slider,
+                    "flow_value": flow_value,
                     "spacing_label": spacing_label,
                     "spacing_row": spacing_row,
                     "spacing_slider": spacing_slider,
@@ -486,6 +827,16 @@ class PreferencesDialog(QDialog):
                     "magic_mode_label": magic_mode_label,
                     "magic_mode": magic_mode_combo,
                     "edge_protect": edge_protect_check,
+                    "smart_feather_label": smart_feather_label,
+                    "smart_feather_row": smart_feather_row,
+                    "smart_feather_slider": smart_feather_slider,
+                    "smart_feather_value": smart_feather_value,
+                    "smart_expand_label": smart_expand_label,
+                    "smart_expand_row": smart_expand_row,
+                    "smart_expand_slider": smart_expand_slider,
+                    "smart_expand_value": smart_expand_value,
+                    "smart_cleanup_holes": smart_cleanup_holes_check,
+                    "smart_cleanup_speckles": smart_cleanup_speckles_check,
                     "save_btn": save_preset_btn,
                     "save_as_btn": save_preset_as_btn,
                 }
@@ -503,7 +854,11 @@ class PreferencesDialog(QDialog):
             self._register_search_target(
                 self.editor_tab,
                 tool_group,
-                f"{tool_name} brush smart selection save preset brush size softness opacity spacing tolerance magic mode edge protect",
+                (
+                    f"{tool_name} brush smart selection save preset brush size softness "
+                    "opacity flow spacing tolerance magic mode edge protect selection feather "
+                    "expand contract fill holes remove speckles"
+                ),
             )
 
         self.editor_reset_btn = QPushButton("Reset Editor Defaults")
@@ -514,7 +869,7 @@ class PreferencesDialog(QDialog):
         self.editor_layout.addStretch()
 
         self.editor_save_full_preset_btn.clicked.connect(self._save_full_preset_from_editor_tab)
-
+        
     def _build_presets_tab(self):
         intro_label = QLabel(
             "Manage mode presets, full presets, and older legacy tool presets from one place."
@@ -697,19 +1052,29 @@ class PreferencesDialog(QDialog):
                         "brush_size": 42,
                         "softness": 35,
                         "opacity": 100,
+                        "flow": 100,
                         "spacing": 1,
                         "tolerance": 35,
                         "magic_mode": "Connected Region",
                         "edge_protect": True,
+                        "smart_feather": 0,
+                        "smart_expand": 1,
+                        "smart_cleanup_holes": True,
+                        "smart_cleanup_speckles": True,
                     },
                     "Smart Selection": {
                         "brush_size": 42,
                         "softness": 35,
                         "opacity": 100,
+                        "flow": 100,
                         "spacing": 1,
                         "tolerance": 35,
                         "magic_mode": "Connected Region",
                         "edge_protect": True,
+                        "smart_feather": 0,
+                        "smart_expand": 1,
+                        "smart_cleanup_holes": True,
+                        "smart_cleanup_speckles": True,
                     },
                 },
                 "Restore": {
@@ -717,19 +1082,29 @@ class PreferencesDialog(QDialog):
                         "brush_size": 42,
                         "softness": 45,
                         "opacity": 100,
+                        "flow": 100,
                         "spacing": 1,
                         "tolerance": 35,
                         "magic_mode": "Connected Region",
                         "edge_protect": True,
+                        "smart_feather": 0,
+                        "smart_expand": 1,
+                        "smart_cleanup_holes": True,
+                        "smart_cleanup_speckles": True,
                     },
                     "Smart Selection": {
                         "brush_size": 42,
                         "softness": 45,
                         "opacity": 100,
+                        "flow": 100,
                         "spacing": 1,
                         "tolerance": 35,
                         "magic_mode": "Connected Region",
                         "edge_protect": True,
+                        "smart_feather": 0,
+                        "smart_expand": 1,
+                        "smart_cleanup_holes": True,
+                        "smart_cleanup_speckles": True,
                     },
                 },
                 "Magic Erase": {
@@ -737,19 +1112,29 @@ class PreferencesDialog(QDialog):
                         "brush_size": 36,
                         "softness": 55,
                         "opacity": 100,
+                        "flow": 100,
                         "spacing": 1,
                         "tolerance": 24,
                         "magic_mode": "Connected Region",
                         "edge_protect": True,
+                        "smart_feather": 0,
+                        "smart_expand": 1,
+                        "smart_cleanup_holes": True,
+                        "smart_cleanup_speckles": True,
                     },
                     "Smart Selection": {
                         "brush_size": 36,
                         "softness": 55,
                         "opacity": 100,
+                        "flow": 100,
                         "spacing": 1,
                         "tolerance": 24,
                         "magic_mode": "Connected Region",
                         "edge_protect": True,
+                        "smart_feather": 0,
+                        "smart_expand": 1,
+                        "smart_cleanup_holes": True,
+                        "smart_cleanup_speckles": True,
                     },
                 },
                 "Background Erase": {
@@ -757,19 +1142,29 @@ class PreferencesDialog(QDialog):
                         "brush_size": 36,
                         "softness": 55,
                         "opacity": 100,
+                        "flow": 100,
                         "spacing": 1,
                         "tolerance": 20,
                         "magic_mode": "Connected Region",
                         "edge_protect": True,
+                        "smart_feather": 0,
+                        "smart_expand": 1,
+                        "smart_cleanup_holes": True,
+                        "smart_cleanup_speckles": True,
                     },
                     "Smart Selection": {
                         "brush_size": 36,
                         "softness": 55,
                         "opacity": 100,
+                        "flow": 100,
                         "spacing": 1,
                         "tolerance": 20,
                         "magic_mode": "Connected Region",
                         "edge_protect": True,
+                        "smart_feather": 0,
+                        "smart_expand": 1,
+                        "smart_cleanup_holes": True,
+                        "smart_cleanup_speckles": True,
                     },
                 },
             },
@@ -794,6 +1189,16 @@ class PreferencesDialog(QDialog):
 
     def _mode_key(self, mode_name: str) -> str:
         return mode_name.lower().replace(" ", "_")
+        
+    def _saved_startup_preset_name(self) -> str:
+        preset_name = self.settings.value("prefs/startup_preset_name", "", type=str)
+        preset_name = str(preset_name).strip()
+
+        if not preset_name:
+            preset_name = self.settings.value("prefs/startup_preset", "", type=str)
+            preset_name = str(preset_name).strip()
+
+        return preset_name
 
     def _tool_preset_names(self) -> list[str]:
         names = self.settings.value("tool_presets/names", [], type=list)
@@ -853,10 +1258,15 @@ class PreferencesDialog(QDialog):
             "brush_size": widgets["brush_size_slider"].value(),
             "softness": widgets["softness_slider"].value(),
             "opacity": widgets["opacity_slider"].value(),
+            "flow": widgets["flow_slider"].value(),
             "spacing": widgets["spacing_slider"].value(),
             "tolerance": widgets["tolerance_slider"].value(),
             "magic_mode": widgets["magic_mode"].currentText(),
             "edge_protect": widgets["edge_protect"].isChecked(),
+            "smart_feather": widgets["smart_feather_slider"].value(),
+            "smart_expand": widgets["smart_expand_slider"].value(),
+            "smart_cleanup_holes": widgets["smart_cleanup_holes"].isChecked(),
+            "smart_cleanup_speckles": widgets["smart_cleanup_speckles"].isChecked(),
         }
 
     def _collect_tool_values(self, tool_name: str) -> dict:
@@ -876,10 +1286,15 @@ class PreferencesDialog(QDialog):
         widgets["brush_size_slider"].setValue(values.get("brush_size", 42))
         widgets["softness_slider"].setValue(values.get("softness", 35))
         widgets["opacity_slider"].setValue(values.get("opacity", 100))
+        widgets["flow_slider"].setValue(values.get("flow", 100))
         widgets["spacing_slider"].setValue(values.get("spacing", 1))
         widgets["tolerance_slider"].setValue(values.get("tolerance", 35))
         widgets["magic_mode"].setCurrentText(values.get("magic_mode", "Connected Region"))
         widgets["edge_protect"].setChecked(values.get("edge_protect", True))
+        widgets["smart_feather_slider"].setValue(values.get("smart_feather", 0))
+        widgets["smart_expand_slider"].setValue(values.get("smart_expand", 1))
+        widgets["smart_cleanup_holes"].setChecked(values.get("smart_cleanup_holes", True))
+        widgets["smart_cleanup_speckles"].setChecked(values.get("smart_cleanup_speckles", True))
         self._update_editor_mode_section_visibility(tool_name, mode_name)
 
     def _update_editor_mode_section_visibility(self, tool_name: str, mode_name: str):
@@ -895,6 +1310,9 @@ class PreferencesDialog(QDialog):
         widgets["opacity_label"].setVisible(visibility["opacity"])
         widgets["opacity_row"].setVisible(visibility["opacity"])
 
+        widgets["flow_label"].setVisible(visibility["flow"])
+        widgets["flow_row"].setVisible(visibility["flow"])
+
         widgets["spacing_label"].setVisible(visibility["spacing"])
         widgets["spacing_row"].setVisible(visibility["spacing"])
 
@@ -905,6 +1323,15 @@ class PreferencesDialog(QDialog):
         widgets["magic_mode"].setVisible(visibility["magic_mode"])
 
         widgets["edge_protect"].setVisible(visibility["edge_protect"])
+
+        widgets["smart_feather_label"].setVisible(visibility["smart_feather"])
+        widgets["smart_feather_row"].setVisible(visibility["smart_feather"])
+
+        widgets["smart_expand_label"].setVisible(visibility["smart_expand"])
+        widgets["smart_expand_row"].setVisible(visibility["smart_expand"])
+
+        widgets["smart_cleanup_holes"].setVisible(visibility["smart_cleanup"])
+        widgets["smart_cleanup_speckles"].setVisible(visibility["smart_cleanup"])
 
     def _apply_tool_values(self, tool_name: str, data: dict):
         for mode_name in self._mode_names():
@@ -1007,6 +1434,11 @@ class PreferencesDialog(QDialog):
                     mode_defaults["opacity"],
                     type=int,
                 ),
+                "flow": self.settings.value(
+                    f"tool_presets/{preset_name}/{tool_key}/{mode_key}/flow",
+                    mode_defaults.get("flow", 100),
+                    type=int,
+                ),
                 "spacing": self.settings.value(
                     f"tool_presets/{preset_name}/{tool_key}/{mode_key}/spacing",
                     mode_defaults["spacing"],
@@ -1025,6 +1457,26 @@ class PreferencesDialog(QDialog):
                 "edge_protect": self.settings.value(
                     f"tool_presets/{preset_name}/{tool_key}/{mode_key}/edge_protect",
                     mode_defaults["edge_protect"],
+                    type=bool,
+                ),
+                "smart_feather": self.settings.value(
+                    f"tool_presets/{preset_name}/{tool_key}/{mode_key}/smart_feather",
+                    mode_defaults.get("smart_feather", 0),
+                    type=int,
+                ),
+                "smart_expand": self.settings.value(
+                    f"tool_presets/{preset_name}/{tool_key}/{mode_key}/smart_expand",
+                    mode_defaults.get("smart_expand", 1),
+                    type=int,
+                ),
+                "smart_cleanup_holes": self.settings.value(
+                    f"tool_presets/{preset_name}/{tool_key}/{mode_key}/smart_cleanup_holes",
+                    mode_defaults.get("smart_cleanup_holes", True),
+                    type=bool,
+                ),
+                "smart_cleanup_speckles": self.settings.value(
+                    f"tool_presets/{preset_name}/{tool_key}/{mode_key}/smart_cleanup_speckles",
+                    mode_defaults.get("smart_cleanup_speckles", True),
                     type=bool,
                 ),
             }
@@ -1097,6 +1549,11 @@ class PreferencesDialog(QDialog):
                         mode_defaults["opacity"],
                         type=int,
                     ),
+                    "flow": self.settings.value(
+                        f"editor_presets/{preset_name}/{tool_key}/{mode_key}/flow",
+                        mode_defaults.get("flow", 100),
+                        type=int,
+                    ),
                     "spacing": self.settings.value(
                         f"editor_presets/{preset_name}/{tool_key}/{mode_key}/spacing",
                         mode_defaults["spacing"],
@@ -1115,6 +1572,26 @@ class PreferencesDialog(QDialog):
                     "edge_protect": self.settings.value(
                         f"editor_presets/{preset_name}/{tool_key}/{mode_key}/edge_protect",
                         mode_defaults["edge_protect"],
+                        type=bool,
+                    ),
+                    "smart_feather": self.settings.value(
+                        f"editor_presets/{preset_name}/{tool_key}/{mode_key}/smart_feather",
+                        mode_defaults.get("smart_feather", 0),
+                        type=int,
+                    ),
+                    "smart_expand": self.settings.value(
+                        f"editor_presets/{preset_name}/{tool_key}/{mode_key}/smart_expand",
+                        mode_defaults.get("smart_expand", 1),
+                        type=int,
+                    ),
+                    "smart_cleanup_holes": self.settings.value(
+                        f"editor_presets/{preset_name}/{tool_key}/{mode_key}/smart_cleanup_holes",
+                        mode_defaults.get("smart_cleanup_holes", True),
+                        type=bool,
+                    ),
+                    "smart_cleanup_speckles": self.settings.value(
+                        f"editor_presets/{preset_name}/{tool_key}/{mode_key}/smart_cleanup_speckles",
+                        mode_defaults.get("smart_cleanup_speckles", True),
                         type=bool,
                     ),
                 }
@@ -1308,8 +1785,8 @@ class PreferencesDialog(QDialog):
             self._delete_named_tool_preset_without_prompt(entry["name"])
         else:
             self._delete_named_full_preset_without_prompt(entry["name"])
-            if self.settings.value("general/startup_preset", "", type=str) == entry["name"]:
-                self.settings.setValue("general/startup_preset", "")
+            if self.settings.value("prefs/startup_preset", "", type=str) == entry["name"]:
+                self.settings.setValue("prefs/startup_preset", "")
 
         self.settings.sync()
         self._refresh_startup_preset_combo()
@@ -1350,8 +1827,8 @@ class PreferencesDialog(QDialog):
             self._delete_named_tool_preset_without_prompt(old_name)
         else:
             self._delete_named_full_preset_without_prompt(old_name)
-            if self.settings.value("general/startup_preset", "", type=str) == old_name:
-                self.settings.setValue("general/startup_preset", new_name)
+            if self.settings.value("prefs/startup_preset", "", type=str) == old_name:
+                self.settings.setValue("prefs/startup_preset", new_name)
 
         self.settings.sync()
         self._refresh_startup_preset_combo()
@@ -1441,6 +1918,11 @@ class PreferencesDialog(QDialog):
                         mode_defaults["opacity"],
                         type=int,
                     ),
+                    "flow": self.settings.value(
+                        f"tool_presets/{preset_name}/{tool_key}/{mode_key}/flow",
+                        mode_defaults.get("flow", 100),
+                        type=int,
+                    ),
                     "spacing": self.settings.value(
                         f"tool_presets/{preset_name}/{tool_key}/{mode_key}/spacing",
                         mode_defaults["spacing"],
@@ -1456,9 +1938,29 @@ class PreferencesDialog(QDialog):
                         mode_defaults["magic_mode"],
                         type=str,
                     ),
-                    "edge_protect": self.settings.value(
+                   "edge_protect": self.settings.value(
                         f"tool_presets/{preset_name}/{tool_key}/{mode_key}/edge_protect",
                         mode_defaults["edge_protect"],
+                        type=bool,
+                    ),
+                    "smart_feather": self.settings.value(
+                        f"tool_presets/{preset_name}/{tool_key}/{mode_key}/smart_feather",
+                        mode_defaults.get("smart_feather", 0),
+                        type=int,
+                    ),
+                    "smart_expand": self.settings.value(
+                        f"tool_presets/{preset_name}/{tool_key}/{mode_key}/smart_expand",
+                        mode_defaults.get("smart_expand", 1),
+                        type=int,
+                    ),
+                    "smart_cleanup_holes": self.settings.value(
+                        f"tool_presets/{preset_name}/{tool_key}/{mode_key}/smart_cleanup_holes",
+                        mode_defaults.get("smart_cleanup_holes", True),
+                        type=bool,
+                    ),
+                    "smart_cleanup_speckles": self.settings.value(
+                        f"tool_presets/{preset_name}/{tool_key}/{mode_key}/smart_cleanup_speckles",
+                        mode_defaults.get("smart_cleanup_speckles", True),
                         type=bool,
                     ),
                 }
@@ -1498,6 +2000,11 @@ class PreferencesDialog(QDialog):
                         mode_defaults["opacity"],
                         type=int,
                     ),
+                    "flow": self.settings.value(
+                        f"editor_presets/{preset_name}/{tool_key}/{mode_key}/flow",
+                        mode_defaults.get("flow", 100),
+                        type=int,
+                    ),
                     "spacing": self.settings.value(
                         f"editor_presets/{preset_name}/{tool_key}/{mode_key}/spacing",
                         mode_defaults["spacing"],
@@ -1516,6 +2023,26 @@ class PreferencesDialog(QDialog):
                     "edge_protect": self.settings.value(
                         f"editor_presets/{preset_name}/{tool_key}/{mode_key}/edge_protect",
                         mode_defaults["edge_protect"],
+                        type=bool,
+                    ),
+                    "smart_feather": self.settings.value(
+                        f"editor_presets/{preset_name}/{tool_key}/{mode_key}/smart_feather",
+                        mode_defaults.get("smart_feather", 0),
+                        type=int,
+                    ),
+                    "smart_expand": self.settings.value(
+                        f"editor_presets/{preset_name}/{tool_key}/{mode_key}/smart_expand",
+                        mode_defaults.get("smart_expand", 1),
+                        type=int,
+                    ),
+                    "smart_cleanup_holes": self.settings.value(
+                        f"editor_presets/{preset_name}/{tool_key}/{mode_key}/smart_cleanup_holes",
+                        mode_defaults.get("smart_cleanup_holes", True),
+                        type=bool,
+                    ),
+                    "smart_cleanup_speckles": self.settings.value(
+                        f"editor_presets/{preset_name}/{tool_key}/{mode_key}/smart_cleanup_speckles",
+                        mode_defaults.get("smart_cleanup_speckles", True),
                         type=bool,
                     ),
                 }
@@ -1588,6 +2115,10 @@ class PreferencesDialog(QDialog):
                     int(mode_data.get("opacity", defaults["opacity"])),
                 )
                 self.settings.setValue(
+                    f"tool_presets/{preset_name}/{tool_key}/{mode_key}/flow",
+                    int(mode_data.get("flow", defaults.get("flow", 100))),
+                )
+                self.settings.setValue(
                     f"tool_presets/{preset_name}/{tool_key}/{mode_key}/spacing",
                     int(mode_data.get("spacing", defaults["spacing"])),
                 )
@@ -1602,6 +2133,22 @@ class PreferencesDialog(QDialog):
                 self.settings.setValue(
                     f"tool_presets/{preset_name}/{tool_key}/{mode_key}/edge_protect",
                     bool(mode_data.get("edge_protect", defaults["edge_protect"])),
+                )
+                self.settings.setValue(
+                    f"tool_presets/{preset_name}/{tool_key}/{mode_key}/smart_feather",
+                    int(mode_data.get("smart_feather", defaults.get("smart_feather", 0))),
+                )
+                self.settings.setValue(
+                    f"tool_presets/{preset_name}/{tool_key}/{mode_key}/smart_expand",
+                    int(mode_data.get("smart_expand", defaults.get("smart_expand", 1))),
+                )
+                self.settings.setValue(
+                    f"tool_presets/{preset_name}/{tool_key}/{mode_key}/smart_cleanup_holes",
+                    bool(mode_data.get("smart_cleanup_holes", defaults.get("smart_cleanup_holes", True))),
+                )
+                self.settings.setValue(
+                    f"tool_presets/{preset_name}/{tool_key}/{mode_key}/smart_cleanup_speckles",
+                    bool(mode_data.get("smart_cleanup_speckles", defaults.get("smart_cleanup_speckles", True))),
                 )
 
             names = self._tool_preset_names()
@@ -1661,6 +2208,10 @@ class PreferencesDialog(QDialog):
                         int(mode_data.get("opacity", defaults["opacity"])),
                     )
                     self.settings.setValue(
+                        f"editor_presets/{preset_name}/{tool_key}/{mode_key}/flow",
+                        int(mode_data.get("flow", defaults.get("flow", 100))),
+                    )
+                    self.settings.setValue(
                         f"editor_presets/{preset_name}/{tool_key}/{mode_key}/spacing",
                         int(mode_data.get("spacing", defaults["spacing"])),
                     )
@@ -1675,6 +2226,22 @@ class PreferencesDialog(QDialog):
                     self.settings.setValue(
                         f"editor_presets/{preset_name}/{tool_key}/{mode_key}/edge_protect",
                         bool(mode_data.get("edge_protect", defaults["edge_protect"])),
+                    )
+                    self.settings.setValue(
+                        f"editor_presets/{preset_name}/{tool_key}/{mode_key}/smart_feather",
+                        int(mode_data.get("smart_feather", defaults.get("smart_feather", 0))),
+                    )
+                    self.settings.setValue(
+                        f"editor_presets/{preset_name}/{tool_key}/{mode_key}/smart_expand",
+                        int(mode_data.get("smart_expand", defaults.get("smart_expand", 1))),
+                    )
+                    self.settings.setValue(
+                        f"editor_presets/{preset_name}/{tool_key}/{mode_key}/smart_cleanup_holes",
+                        bool(mode_data.get("smart_cleanup_holes", defaults.get("smart_cleanup_holes", True))),
+                    )
+                    self.settings.setValue(
+                        f"editor_presets/{preset_name}/{tool_key}/{mode_key}/smart_cleanup_speckles",
+                        bool(mode_data.get("smart_cleanup_speckles", defaults.get("smart_cleanup_speckles", True))),
                     )
 
             self.settings.setValue(f"editor_presets/{preset_name}/notes", str(data.get("notes", "")).strip())
@@ -1780,10 +2347,15 @@ class PreferencesDialog(QDialog):
                 widgets["brush_size_slider"].setValue(mode_defaults["brush_size"])
                 widgets["softness_slider"].setValue(mode_defaults["softness"])
                 widgets["opacity_slider"].setValue(mode_defaults["opacity"])
+                widgets["flow_slider"].setValue(mode_defaults.get("flow", 100))
                 widgets["spacing_slider"].setValue(mode_defaults["spacing"])
                 widgets["tolerance_slider"].setValue(mode_defaults["tolerance"])
                 widgets["magic_mode"].setCurrentText(mode_defaults["magic_mode"])
                 widgets["edge_protect"].setChecked(mode_defaults["edge_protect"])
+                widgets["smart_feather_slider"].setValue(mode_defaults.get("smart_feather", 0))
+                widgets["smart_expand_slider"].setValue(mode_defaults.get("smart_expand", 1))
+                widgets["smart_cleanup_holes"].setChecked(mode_defaults.get("smart_cleanup_holes", True))
+                widgets["smart_cleanup_speckles"].setChecked(mode_defaults.get("smart_cleanup_speckles", True))
                 self._update_editor_mode_section_visibility(tool_name, mode_name)
 
         self.editor_full_preset_name_edit.setText(self._next_default_full_preset_name())
@@ -1809,17 +2381,26 @@ class PreferencesDialog(QDialog):
         self._reset_presets_tab_fields()
 
     def _refresh_startup_preset_combo(self):
-        current_value = self.settings.value("general/startup_preset", "", type=str)
+        current_value = self._saved_startup_preset_name()
+        print(f"DEBUG LOAD: _saved_startup_preset_name={repr(current_value)}, full_preset_names={self._full_preset_names()}")
 
         self.default_startup_preset_combo.blockSignals(True)
         self.default_startup_preset_combo.clear()
         self.default_startup_preset_combo.addItem("None", "")
-        for preset_name in self._full_preset_names():
-            self.default_startup_preset_combo.addItem(preset_name, preset_name)
+
+        preset_names = self._full_preset_names()
+        for preset_name in preset_names:
+            clean_name = str(preset_name).strip()
+            self.default_startup_preset_combo.addItem(clean_name, clean_name)
 
         index = self.default_startup_preset_combo.findData(current_value)
+
+        if index < 0 and current_value:
+            index = self.default_startup_preset_combo.findText(current_value)
+
         if index < 0:
             index = 0
+
         self.default_startup_preset_combo.setCurrentIndex(index)
         self.default_startup_preset_combo.blockSignals(False)
 
@@ -1829,69 +2410,71 @@ class PreferencesDialog(QDialog):
         shortcut_defaults = self._builtin_defaults()["shortcuts"]
 
         self.default_model_combo.setCurrentText(
-            self.settings.value("general/model", general_defaults["model"], type=str)
+            self.settings.value("prefs/model", general_defaults["model"], type=str)
         )
         self.default_action_combo.setCurrentText(
-            self.settings.value("general/action", general_defaults["action"], type=str)
+            self.settings.value("prefs/action", general_defaults["action"], type=str)
         )
         self.default_target_combo.setCurrentText(
-            self.settings.value("general/target", general_defaults["target"], type=str)
+            self.settings.value("prefs/target", general_defaults["target"], type=str)
         )
         self.default_view_mode_combo.setCurrentText(
-            self.settings.value("general/view_mode", general_defaults["view_mode"], type=str)
+            self.settings.value("prefs/view_mode", general_defaults["view_mode"], type=str)
         )
         self.default_thumbnail_mode_combo.setCurrentText(
-            self.settings.value("general/thumbnail_mode", general_defaults["thumbnail_mode"], type=str)
+            self.settings.value("prefs/thumbnail_mode", general_defaults["thumbnail_mode"], type=str)
         )
         self.default_output_format_combo.setCurrentText(
-            self.settings.value("general/output_format", general_defaults["output_format"], type=str)
+            self.settings.value("prefs/output_format", general_defaults["output_format"], type=str)
         )
         self.default_background_mode_combo.setCurrentText(
-            self.settings.value("general/background_mode", general_defaults["background_mode"], type=str)
+            self.settings.value("prefs/background_mode", general_defaults["background_mode"], type=str)
         )
         self.default_background_color_combo.setCurrentText(
-            self.settings.value("general/background_color", general_defaults["background_color"], type=str)
+            self.settings.value("prefs/background_color", general_defaults["background_color"], type=str)
         )
 
         self.default_open_output_after_export_check.setChecked(
             self.settings.value(
-                "general/open_output_after_export",
+                "prefs/open_output_after_export",
                 general_defaults["open_output_after_export"],
                 type=bool,
             )
         )
         self.default_export_zip_check.setChecked(
-            self.settings.value("general/export_zip", general_defaults["export_zip"], type=bool)
+            self.settings.value("prefs/export_zip", general_defaults["export_zip"], type=bool)
         )
         self.default_overwrite_exports_check.setChecked(
             self.settings.value(
-                "general/overwrite_exports",
+                "prefs/overwrite_exports",
                 general_defaults["overwrite_exports"],
                 type=bool,
             )
         )
         self.default_skip_exported_check.setChecked(
-            self.settings.value("general/skip_exported", general_defaults["skip_exported"], type=bool)
+            self.settings.value("prefs/skip_exported", general_defaults["skip_exported"], type=bool)
         )
         self.default_skip_processed_check.setChecked(
-            self.settings.value("general/skip_processed", general_defaults["skip_processed"], type=bool)
+            self.settings.value("prefs/skip_processed", general_defaults["skip_processed"], type=bool)
         )
         self.default_include_subfolders_check.setChecked(
             self.settings.value(
-                "general/include_subfolders",
+                "prefs/include_subfolders",
                 general_defaults["include_subfolders"],
                 type=bool,
             )
         )
 
-        startup_preset = self.settings.value(
-            "general/startup_preset",
-            general_defaults["startup_preset"],
-            type=str,
-        )
+        startup_preset = self._saved_startup_preset_name()
+        if not startup_preset:
+            startup_preset = str(general_defaults["startup_preset"]).strip()
+
         startup_index = self.default_startup_preset_combo.findData(startup_preset)
+        if startup_index < 0 and startup_preset:
+            startup_index = self.default_startup_preset_combo.findText(startup_preset)
         if startup_index < 0:
             startup_index = 0
+
         self.default_startup_preset_combo.setCurrentIndex(startup_index)
 
         for tool_name in self._tool_names():
@@ -1916,6 +2499,11 @@ class PreferencesDialog(QDialog):
                         defaults["opacity"],
                         type=int,
                     ),
+                    "flow": self.settings.value(
+                        f"editor_defaults/{tool_key}/{mode_key}/flow",
+                        defaults.get("flow", 100),
+                        type=int,
+                    ),
                     "spacing": self.settings.value(
                         f"editor_defaults/{tool_key}/{mode_key}/spacing",
                         defaults["spacing"],
@@ -1936,6 +2524,26 @@ class PreferencesDialog(QDialog):
                         defaults["edge_protect"],
                         type=bool,
                     ),
+                    "smart_feather": self.settings.value(
+                        f"editor_defaults/{tool_key}/{mode_key}/smart_feather",
+                        defaults.get("smart_feather", 0),
+                        type=int,
+                    ),
+                    "smart_expand": self.settings.value(
+                        f"editor_defaults/{tool_key}/{mode_key}/smart_expand",
+                        defaults.get("smart_expand", 1),
+                        type=int,
+                    ),
+                    "smart_cleanup_holes": self.settings.value(
+                        f"editor_defaults/{tool_key}/{mode_key}/smart_cleanup_holes",
+                        defaults.get("smart_cleanup_holes", True),
+                        type=bool,
+                    ),
+                    "smart_cleanup_speckles": self.settings.value(
+                        f"editor_defaults/{tool_key}/{mode_key}/smart_cleanup_speckles",
+                        defaults.get("smart_cleanup_speckles", True),
+                        type=bool,
+                    ),
                 }
 
                 self._apply_mode_values(tool_name, mode_name, values)
@@ -1947,34 +2555,56 @@ class PreferencesDialog(QDialog):
                 )
             )
 
+        if hasattr(self, "watch_folder_edit"):
+            self.watch_folder_edit.setText(
+                self.settings.value("watch/path", "", type=str)
+            )
+        if hasattr(self, "watch_include_subfolders_check"):
+            self.watch_include_subfolders_check.setChecked(
+                self.settings.value("watch/include_subfolders", False, type=bool)
+            )
+        if hasattr(self, "watch_enable_check"):
+            self.watch_enable_check.setChecked(False)
+
+        if hasattr(self, "watch_folder_edit"):
+            self.watch_folder_edit.setText(
+                self.settings.value("watch/path", "", type=str)
+            )
+        if hasattr(self, "watch_include_subfolders_check"):
+            self.watch_include_subfolders_check.setChecked(
+                self.settings.value("watch/include_subfolders", False, type=bool)
+            )
+        if hasattr(self, "watch_enable_check"):
+            self.watch_enable_check.setChecked(False)
+
     def save_settings(self):
-        self.settings.setValue("general/model", self.default_model_combo.currentText())
-        self.settings.setValue("general/action", self.default_action_combo.currentText())
-        self.settings.setValue("general/target", self.default_target_combo.currentText())
-        self.settings.setValue("general/view_mode", self.default_view_mode_combo.currentText())
-        self.settings.setValue("general/thumbnail_mode", self.default_thumbnail_mode_combo.currentText())
-        self.settings.setValue("general/output_format", self.default_output_format_combo.currentText())
-        self.settings.setValue("general/background_mode", self.default_background_mode_combo.currentText())
-        self.settings.setValue("general/background_color", self.default_background_color_combo.currentText())
+        self.settings.setValue("prefs/model", self.default_model_combo.currentText())
+        self.settings.setValue("prefs/action", self.default_action_combo.currentText())
+        self.settings.setValue("prefs/target", self.default_target_combo.currentText())
+        self.settings.setValue("prefs/view_mode", self.default_view_mode_combo.currentText())
+        self.settings.setValue("prefs/thumbnail_mode", self.default_thumbnail_mode_combo.currentText())
+        self.settings.setValue("prefs/output_format", self.default_output_format_combo.currentText())
+        self.settings.setValue("prefs/background_mode", self.default_background_mode_combo.currentText())
+        self.settings.setValue("prefs/background_color", self.default_background_color_combo.currentText())
         self.settings.setValue(
-            "general/open_output_after_export",
+            "prefs/open_output_after_export",
             self.default_open_output_after_export_check.isChecked(),
         )
-        self.settings.setValue("general/export_zip", self.default_export_zip_check.isChecked())
+        self.settings.setValue("prefs/export_zip", self.default_export_zip_check.isChecked())
         self.settings.setValue(
-            "general/overwrite_exports",
+            "prefs/overwrite_exports",
             self.default_overwrite_exports_check.isChecked(),
         )
         self.settings.setValue(
-            "general/skip_exported",
+            "prefs/skip_exported",
             self.default_skip_exported_check.isChecked(),
         )
         self.settings.setValue(
-            "general/skip_processed",
+            "prefs/skip_processed",
             self.default_skip_processed_check.isChecked(),
         )
         self.settings.setValue(
-            "general/include_subfolders",
+            "prefs/include_subfolders",
             self.default_include_subfolders_check.isChecked(),
         )
 
@@ -1982,7 +2612,11 @@ class PreferencesDialog(QDialog):
         if startup_preset is None:
             current_text = self.default_startup_preset_combo.currentText().strip()
             startup_preset = "" if current_text == "None" else current_text
-        self.settings.setValue("general/startup_preset", startup_preset)
+
+        startup_preset = str(startup_preset).strip()
+
+        self.settings.setValue("prefs/startup_preset", startup_preset)
+        self.settings.setValue("prefs/startup_preset_name", startup_preset)
 
         for tool_name in self._tool_names():
             tool_key = self._tool_key(tool_name)
@@ -2002,7 +2636,22 @@ class PreferencesDialog(QDialog):
                 editor.keySequence().toString(QKeySequence.SequenceFormat.NativeText),
             )
 
+        if hasattr(self, "watch_folder_edit"):
+            self.settings.setValue("watch/path", self.watch_folder_edit.text().strip())
+        if hasattr(self, "watch_include_subfolders_check"):
+            self.settings.setValue(
+                "watch/include_subfolders",
+                self.watch_include_subfolders_check.isChecked(),
+            )
+
         self.settings.sync()
+
+    def _on_apply(self):
+        self.save_settings()
+        # Signal the parent to reload without closing the dialog
+        parent = self.parent()
+        if parent is not None and hasattr(parent, "_on_preferences_applied"):
+            parent._on_preferences_applied(self)
 
     def _on_accept(self):
         self.save_settings()

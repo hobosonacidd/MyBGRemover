@@ -1,0 +1,25 @@
+from __future__ import annotations
+
+from processing.rembg_engine import RembgEngine
+from processing.inspyrenet_engine import InSPyReNetEngine
+from processing.modnet_engine import ModNetEngine
+
+
+def create_background_engine(backend_name: str, backend_options: dict | None = None):
+    normalized = (backend_name or "").strip()
+    backend_options = backend_options or {}
+
+    if not normalized or normalized == "rembg":
+        return RembgEngine()
+
+    if normalized == "InSPyReNet":
+        return InSPyReNetEngine(
+            mode=str(backend_options.get("mode", "fast")).strip() or "fast",
+            resize=str(backend_options.get("resize", "static")).strip() or "static",
+            threshold=float(backend_options.get("threshold", 0.5)),
+        )
+
+    if normalized == "MODNet":
+        return ModNetEngine()
+
+    raise ValueError(f"Unsupported backend '{backend_name}'")

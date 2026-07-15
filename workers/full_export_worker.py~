@@ -2,7 +2,7 @@ from pathlib import Path
 
 from PySide6.QtCore import QObject, Signal, Slot
 
-from processing.rembg_engine import RembgEngine
+from processing.backend_factory import create_background_engine
 from processing.export_utils import (
     build_output_path,
     export_processed_image,
@@ -27,6 +27,8 @@ class FullExportWorker(QObject):
         model_name: str,
         background_mode: str,
         background_color_name: str,
+        backend_name: str = "rembg",
+        backend_options: dict | None = None,
         base_preview_mask_path: Path | None = None,
         edited_preview_mask_path: Path | None = None,
         apply_preview_edits: bool = False,
@@ -43,6 +45,8 @@ class FullExportWorker(QObject):
         self.output_format = output_format
         self.suffix = suffix
         self.model_name = model_name
+        self.backend_name = backend_name
+        self.backend_options = backend_options or {}
 
         self.background_mode = background_mode
         self.background_color_name = background_color_name
@@ -58,7 +62,9 @@ class FullExportWorker(QObject):
         try:
             self.status.emit(f"Full export worker started for item index {self.item_index}")
             self.status.emit(f"Source image: {self.source_path}")
+            self.status.emit(f"Backend: {self.backend_name}")
             self.status.emit(f"Model: {self.model_name}")
+            self.status.emit(f"Backend options: {self.backend_options}")
             self.status.emit(f"Output format: {self.output_format}")
             self.status.emit(f"Background mode: {self.background_mode}")
             self.status.emit(f"Background color: {self.background_color_name}")
@@ -82,7 +88,7 @@ class FullExportWorker(QObject):
             else:
                 self.status.emit(f"Generating full-resolution cutout from: {self.source_path}")
 
-                engine = RembgEngine()
+                engine = create_background_engine(self.backend_name, self.backend_options)
 
                 ok, error_message = engine.remove_background_fullres(
                     input_path=self.source_path,

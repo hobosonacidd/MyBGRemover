@@ -1,0 +1,166 @@
+from __future__ import annotations
+
+from io import BytesIO
+from pathlib import Path
+
+import numpy as np
+import onnxruntime as ort
+from PIL import Image, ImageFilter, UnidentifiedImageError
+
+
+class ModNetEngine:
+    """
+    Portrait-focused background remover using a local MODNet ONNX model.
+    """
+
+    MODEL_PATH = (
+        Path.home()
+        / "MyBGRemover"
+        / "public"
+        / "modnet-photographic-portrait-matting"
+        / "modnet_photographic_portrait_matting.onnx"
+    )
+
+    INPUT_SIZE = (512, 512)
+
+    def __init__(
+        self,
+        matte_threshold: float = 0.10,
+        edge_feather: float = 0.0,
+    ):
+        self.matte_threshold = float(matte_threshold)
+        self.edge_feather = float(edge_feather)
+        self._session = None
+
+    def _get_session(self):
+        if self._session is not None:
+            return self._session
+
+        model_path = self.MODEL_PATH
+        if not model_path.exists():
+            raise RuntimeError(
+                "The MODNet ONNX model file was not found.\n"
+                f"Expected path:\n{model_path}"
+            )
+
+        self._session = ort.InferenceSession(
+            str(model_path),
+            providers=["CPUExecutionProvider"],
+        )
+        return self._session
+
+    def _read_input_image(self, input_path: Path, max_size=None) -> Image.Image:
+        with Image.open(input_path) as img:
+            img = img.convert("RGB")
+
+            if max_size is not None:
+                img.thumbnail(max_size, Image.Resampling.LANCZOS)
+
+            buffer = BytesIO()
+            img.save(buffer, format="PNG")
+            buffer.seek(0)
+
+        return Image.open(buffer).convert("RGB")
+
+    def _prepare_input_tensor(self, img: Image.Image) -> np.ndarray:
+        resized = img.resize(self.INPUT_SIZE, Image.Resampling.BILINEAR)
+        arr = np.asarray(resized).astype(np.float32) / 255.0
+
+        arr = arr[:, :, ::-1]
+        arr = np.transpose(arr, (2, 0, 1))
+        arr = np.expand_dims(arr, axis=0)
+
+        return arr.astype(np.float32)
+
+    def _extract_matte(self, output_tensor: np.ndarray) -> np.ndarray:
+        matte = output_tensor
+
+        while matte.ndim > 2:
+            matte = matte[0]
+
+        matte = np.asarray(matte, dtype=np.float32)
+        matte = np.clip(matte, 0.0, 1.0)
+
+        threshold = max(0.0, min(1.0, self.matte_threshold))
+        if threshold > 0.0:
+            matte = np.where(matte < threshold, 0.0, matte)
+
+        return matte
+
+    def _compose_rgba(self, source_img: Image.Image, matte: np.ndarray) -> Image.Image:
+        matte_img = Image.fromarray((matte * 255.0).astype(np.uint8), mode="L")
+        matte_img = matte_img.resize(source_img.size, Image.Resampling.BILINEAR)
+
+        feather_radius = max(0.0, float(self.edge_feather))
+        if feather_radius > 0:
+            matte_img = matte_img.filter(ImageFilter.GaussianBlur(radius=feather_radius))
+
+        rgba = source_img.convert("RGBA")
+        rgba.putalpha(matte_img)
+        return rgba
+
+    def _run_remove(
+        self,
+        input_path: Path,
+        output_path: Path,
+        max_size=None,
+    ):
+        try:
+            input_path = Path(input_path)
+            output_path = Path(output_path)
+
+            if not input_path.exists():
+                return False, f"Input file not found: {input_path}"
+
+            session = self._get_session()
+            img = self._read_input_image(input_path, max_size=max_size)
+            input_tensor = self._prepare_input_tensor(img)
+
+            input_name = session.get_inputs()[0].name
+            output_name = session.get_outputs()[0].name
+
+            output_tensor = session.run([output_name], {input_name: input_tensor})[0]
+            matte = self._extract_matte(output_tensor)
+            result = self._compose_rgba(img, matte)
+
+            output_path.parent.mkdir(parents=True, exist_ok=True)
+            result.save(output_path, format="PNG")
+
+            if not output_path.exists():
+                return False, f"Processed file was not created: {output_path}"
+
+            return True, None
+
+        except FileNotFoundError:
+            return False, f"Input file not found: {input_path}"
+
+        except UnidentifiedImageError:
+            return False, f"Could not read image file: {input_path}"
+
+        except Exception as e:
+            return False, str(e)
+
+    def remove_background_preview(
+        self,
+        input_path: Path,
+        output_path: Path,
+        model_name: str = "",
+        max_size=(1200, 1200),
+    ):
+        return self._run_remove(
+            input_path=input_path,
+            output_path=output_path,
+            max_size=max_size,
+        )
+
+    def remove_background_fullres(
+        self,
+        input_path: Path,
+        output_path: Path,
+        model_name: str = "",
+    ):
+        return self._run_remove(
+            input_path=input_path,
+            output_path=output_path,
+            max_size=None,
+        )
